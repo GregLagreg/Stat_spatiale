@@ -1,0 +1,208 @@
+---
+title: "Wolfcamp data: IDW vs Multilevel B-Splines"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+## Installation of the packages
+
+The packages only need to be installed once, so this chunk is not evaluated when rendering.
+
+```{r}
+#| label: install
+#| eval: false
+install.packages("geoR")
+install.packages("sf")
+install.packages("gstat")
+install.packages("MBA")
+```
+
+## Loading the data
+
+```{r}
+#| label: load-geoR
+library(geoR)
+data(wolfcamp)
+```
+
+We got wolfcamp data. In a first time, we will analyse the data in order to understand their repartition.
+
+```{r}
+#| label: summary-plot
+summary(wolfcamp)
+
+plot(wolfcamp)
+```
+
+Then, we create a csv file so as to stock the data.
+
+```{r}
+#| label: export-csv
+wolfcamp_df <- data.frame(
+  x = wolfcamp$coords[,1], 
+  y = wolfcamp$coords[,2], 
+  niveau_eau = wolfcamp$data
+)
+
+write.csv(wolfcamp_df, file = "wolfcamp_data.csv", row.names = FALSE)
+
+head(wolfcamp_df)
+```
+
+Link to discover the first discussion : <https://share.gemini.google/mQVoQ6oey1LJ>
+
+## Choice of the power parameter for IDW
+
+Now, we choose the parameter p which allows to have the best predictions with the inverse distance weighted estimator.
+
+```{r}
+#| label: idw-optimization
+# 1. Load required libraries
+library(sf)
+library(gstat)
+
+# 1. Read the CSV file into an R data.frame
+wolfcamp <- read.csv("wolfcamp_data.csv")
+
+# 2. Convert the loaded data.frame into a spatial (sf) object
+
+wolfcamp_sf <- st_as_sf(wolfcamp, coords = c("x", "y"))
+
+# 3. Define a sequence of power parameters (p) to test
+p_values <- seq(0.5, 10.0, by = 0.25)
+
+# Initialize an empty vector to store the MSE for each p
+mse_results <- numeric(length(p_values))
+
+# 4. Outer Loop: Iterate over each possible parameter p
+for (i in seq_along(p_values)) {
+  
+  current_p <- p_values[i]
+  squared_errors <- numeric(nrow(wolfcamp_sf))
+  
+  # 5. Inner Loop: Leave-One-Out Cross-Validation
+  for (j in 1:nrow(wolfcamp_sf)) {
+    
+    # STRICT SEPARATION: Remove test point 'j' from training data
+    train_data <- wolfcamp_sf[-j, ]
+    test_data  <- wolfcamp_sf[j, ]
+    
+    # Fit IDW model on training data and predict on the test point
+    # 'idp' is the gstat argument for the power parameter
+    idw_fit <- idw(
+      formula = niveau_eau ~ 1,
+      locations = train_data,
+      newdata = test_data,
+      idp = current_p,
+      debug.level = 0 # Suppress console output for speed
+    )
+    
+    # Extract prediction and calculate squared error
+    predicted_val <- idw_fit$var1.pred
+    actual_val <- test_data$niveau_eau
+    
+    squared_errors[j] <- (predicted_val - actual_val)^2
+  }
+  
+  # 6. Calculate the Mean Squared Error for the current p
+  mse_results[i] <- mean(squared_errors)
+}
+
+# 7. Identify the optimal p
+results_df <- data.frame(Power = p_values, MSE = mse_results)
+optimal_p <- results_df$Power[which.min(results_df$MSE)]
+
+print(results_df)
+cat("\nThe optimal power parameter (p) is:", optimal_p, "\n")
+# Plot the evolution of MSE vs. p
+plot(results_df$Power, results_df$MSE, type = "b", pch = 19, col = "blue",
+     xlab = "Power Parameter (p)", ylab = "Mean Squared Error (MSE)",
+     main = "IDW Optimization: MSE vs. Power Parameter")
+
+# Add a vertical red dashed line to highlight the optimal p
+abline(v = optimal_p, col = "red", lty = 2, lwd = 2)
+```
+
+## Comparison of IDW and MBA
+
+```{r}
+#| label: idw-vs-mba
+library(sf)
+library(gstat)
+library(MBA)
+
+# ---------------------------------------------------------
+# PART 1: Define the 20x20 Grid
+# ---------------------------------------------------------
+# Create a sequence of 20 evenly spaced X and Y coordinates
+x_seq <- seq(min(wolfcamp$x), max(wolfcamp$x), length.out = 20)
+y_seq <- seq(min(wolfcamp$y), max(wolfcamp$y), length.out = 20)
+
+# Combine them into a grid of 400 points
+pred_grid <- expand.grid(x = x_seq, y = y_seq)
+grid_sf <- st_as_sf(pred_grid, coords = c("x", "y"))
+
+# ---------------------------------------------------------
+# PART 2: Interpolate on the Grid
+# ---------------------------------------------------------
+# A. IDW Interpolation on the grid (using your optimal_p from earlier)
+idw_grid_result <- idw(
+  formula = niveau_eau ~ 1, 
+  locations = wolfcamp_sf, 
+  newdata = grid_sf, 
+  idp = 3.75
+)
+
+# B. MBA Interpolation on the grid
+# mba.surf takes an [x, y, z] matrix and grid dimensions
+xyz_data <- wolfcamp[, c("x", "y", "niveau_eau")]
+mba_grid_result <- mba.surf(xyz_data, no.X = 20, no.Y = 20, extend = TRUE)
+
+# ---------------------------------------------------------
+# PART 3: Calculate a "Proper Score" (LOOCV RMSE)
+# ---------------------------------------------------------
+
+# A. Score IDW (using gstat's built-in krige.cv)
+idw_cv <- krige.cv(niveau_eau ~ 1, wolfcamp_sf, set = list(idp = optimal_p), debug.level = 0)
+idw_rmse <- sqrt(mean(idw_cv$residual^2))
+
+# B. Score MBA (Manual LOOCV using mba.points)
+mba_residuals <- numeric(nrow(wolfcamp))
+
+for (i in 1:nrow(wolfcamp)) {
+  # Separate train and test
+  train_xyz <- xyz_data[-i, ]
+  test_xy <- xyz_data[i, c("x", "y")]
+  
+  # Predict the left-out point using mba.points
+  mba_pred <- mba.points(train_xyz, test_xy)$xyz.est
+  
+  # Calculate residual (Actual - Predicted)
+  actual_val <- xyz_data$niveau_eau[i]
+  predicted_val <- mba_pred[1, "z"]
+  
+  mba_residuals[i] <- actual_val - predicted_val
+}
+
+mba_rmse <- sqrt(mean(mba_residuals^2))
+
+# ---------------------------------------------------------
+# PART 4: Compare
+# ---------------------------------------------------------
+cat("Proper Score Comparison (Root Mean Squared Error):\n")
+cat("IDW RMSE: ", idw_rmse, "\n")
+cat("MBA RMSE: ", mba_rmse, "\n\n")
+
+if(idw_rmse < mba_rmse) {
+  cat("Conclusion: IDW is the more accurate method for this dataset.\n")
+} else {
+  cat("Conclusion: Multilevel B-Splines (MBA) is the more accurate method for this dataset.\n")
+}
+```
