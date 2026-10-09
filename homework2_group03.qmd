@@ -5,3 +5,7 @@ format: html
 ---
 
 stat desc : summary, map, semi variogram
+
+```{r}
+
+```
