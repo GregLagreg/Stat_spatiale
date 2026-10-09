@@ -1,0 +1,242 @@
+---
+title: "Homework 1"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+# Part 1:
+
+Link to discover the first discussion Gemini 3.1 Pro 2 : <https://share.gemini.google/mQVoQ6oey1LJ>. In the second answer, the AI is detailing more thoroughly the methodology of the semi-variogram and Moran's I, this is necessary to understand what allows us to affirm or not that the data are spatially dependent.
+
+# Part 2:
+
+## Installation of the packages
+
+The packages only need to be installed once, so this chunk is not evaluated when rendering.
+
+```{r}
+#| label: install
+#| eval: false
+install.packages("geoR")
+install.packages("sf")
+install.packages("gstat")
+install.packages("MBA")
+```
+
+## Loading the data
+
+```{r}
+#| label: load-geoR
+library(geoR)
+data(wolfcamp)
+```
+
+We got wolfcamp data. In a first time, the data are summarized and plotted in order to understand their distribution.
+
+```{r}
+#| label: summary-plot
+summary(wolfcamp)
+plot(wolfcamp)
+```
+
+## Question A): Choice of the smoothness parameter for IDW
+
+A leave one out cross validation is a good way to choose the optimal smoothness parameter in terms of MSE. This prompt was used with using Claude sonnet 5.5 to generate a code for applying this methodoloy:
+
+> I am a student in spatial statistics, I am working on the wolfcamp geodata. Write an R function that choose the best parameter p in Inverse Distance Weighting by leave one out validation evaluated by MSE. You should use the idw implemented in gstat and let me a way to assess choice of p (by returning a plot of the mse according to the different values of p).
+
+```{r}
+library(gstat)
+library(sf)
+library(ggplot2)
+
+#' Choose the IDW power parameter p by leave-one-out cross-validation (MSE)
+#'
+#' @param coords  n x 2 matrix/data.frame of coordinates
+#' @param z       numeric vector of length n (observed values)
+#' @param p_grid  candidate values of the power parameter p (idp in gstat)
+#' @param nmax    optional: max number of neighbours used by idw (default: all)
+#' @return list with best_p, mse table, and a ggplot object
+
+choose_idw_p <- function(coords, z,
+                         p_grid = seq(0.5, 6, by = 0.25),
+                         nmax = Inf) {
+  
+  stopifnot(nrow(coords) == length(z))
+  n <- length(z)
+  
+  dat <- data.frame(x = coords[, 1], y = coords[, 2], z = z)
+  pts <- st_as_sf(dat, coords = c("x", "y"), crs = NA)
+  
+  # LOO predictions for a given p
+  loo_mse <- function(p) {
+    pred <- numeric(n)
+    for (i in seq_len(n)) {
+      out <- idw(z ~ 1,
+                 locations = pts[-i, ],
+                 newdata   = pts[i, ],
+                 idp       = p,
+                 nmax      = nmax,
+                 debug.level = 0)
+      pred[i] <- out$var1.pred
+    }
+    mean((z - pred)^2)
+  }
+  
+  mse <- vapply(p_grid, loo_mse, numeric(1))
+  res <- data.frame(p = p_grid, MSE = mse)
+  best_p <- res$p[which.min(res$MSE)]
+  
+  plt <- ggplot(res, aes(p, MSE)) +
+    geom_line() +
+    geom_point() +
+    geom_point(data = res[res$p == best_p, ], colour = "red", size = 3) +
+    geom_vline(xintercept = best_p, linetype = "dashed", colour = "red") +
+    labs(title = "Leave-one-out MSE for IDW",
+         subtitle = paste0("Best p = ", best_p,
+                           " (MSE = ", signif(min(res$MSE), 4), ")"),
+         x = "Power parameter p", y = "LOO MSE") +
+    theme_minimal()
+  
+  list(best_p = best_p, mse = res, plot = plt)
+}
+```
+
+Now that the function is created, let's apply it to wolfcamp data:
+
+```{r}
+library(geoR)
+data(wolfcamp)
+
+out <- choose_idw_p(coords = wolfcamp$coords,
+                    z      = wolfcamp$data,
+                    p_grid = seq(0.5, 6, by = 0.25))
+
+out$best_p   # optimal p
+out$mse      # table of p vs MSE
+out$plot     # MSE curve
+```
+
+The optimal parameter is not on the edge of the values taken by p, thus there is no need to expand the grid and retry. The function states that the MSE is at its lowest when p takes the value of 3.75. This is then retained as the best smoothness parameter in that example.
+
+## Question B): Comparison of IDW and splines
+
+Another interpolation method is the use of multilevel bi-splines, the goal of this code is to compare the efficiency of the two methods. This Prompt used again with Claude sonnet 5.5 to generate the code:
+
+> I work with wolfcamp data, build a 20x20 grid from the coordinates and compare two methods of interpolation : IDW (use the choose_idw_p() R function we built to choose the optimal p) and multilevel bi-splines (function mba.surf from MBA, mba.points) use cross validation with MSE and MAE to compare the methods and let me assess the results.
+
+```{r}
+#| label: idw-vs-splines
+library(geoR); library(MBA); library(gstat); library(sf); library(ggplot2)
+# choose_idw_p() must already be defined (see previous message)
+
+# ---- helpers -------------------------------------------------------------
+idw_predict <- function(coords_tr, z_tr, coords_te, p) {
+  tr <- st_as_sf(data.frame(x = coords_tr[,1], y = coords_tr[,2], z = z_tr),
+                 coords = c("x","y"), crs = NA)
+  te <- st_as_sf(data.frame(x = coords_te[,1], y = coords_te[,2]),
+                 coords = c("x","y"), crs = NA)
+  idw(z ~ 1, locations = tr, newdata = te, idp = p, debug.level = 0)$var1.pred
+}
+
+mba_predict <- function(coords_tr, z_tr, coords_te, mba_args) {
+  xyz <- cbind(coords_tr, z_tr)
+  est <- do.call(mba.points,
+                 c(list(xyz = xyz, xy.est = coords_te, extend = TRUE), mba_args))
+  est$xyz.est[, 3]
+}
+
+# ---- main function -------------------------------------------------------
+compare_interp <- function(coords, z, ngrid = 20,
+                           p_grid = seq(0.5, 6, by = 0.25),
+                           K = 10, seed = 123,
+                           mba_args = list(n = 1, m = 1, h = 8)) {
+  coords <- as.matrix(coords); n <- length(z)
+  
+  ## 1. 20x20 grid + surfaces from all data -------------------------------
+  surf <- do.call(mba.surf,
+                  c(list(xyz = cbind(coords, z), no.X = ngrid, no.Y = ngrid,
+                         extend = TRUE, sp = FALSE), mba_args))$xyz.est
+  grid <- expand.grid(x = surf$x, y = surf$y)      # x varies fastest
+  grid$MBA <- as.vector(surf$z)                    # matches expand.grid order
+  
+  sel <- choose_idw_p(coords, z, p_grid)           # p from the full data
+  grid$IDW <- idw_predict(coords, z, as.matrix(grid[, c("x","y")]), sel$best_p)
+  
+  grid_long <- rbind(
+    data.frame(grid[, c("x","y")], method = "IDW", pred = grid$IDW),
+    data.frame(grid[, c("x","y")], method = "MBA", pred = grid$MBA))
+  p_maps <- ggplot(grid_long, aes(x, y, fill = pred)) +
+    geom_raster() +
+    geom_point(data = data.frame(x = coords[,1], y = coords[,2]),
+               aes(x, y), inherit.aes = FALSE, size = 0.7, alpha = 0.6) +
+    scale_fill_viridis_c() + coord_equal() + facet_wrap(~method) +
+    labs(title = paste0(ngrid, "x", ngrid, " grid predictions"),
+         subtitle = paste0("IDW with p = ", sel$best_p), fill = "Prediction") +
+    theme_minimal()
+  
+  grid$diff <- grid$IDW - grid$MBA
+  p_diff <- ggplot(grid, aes(x, y, fill = diff)) + geom_raster() +
+    scale_fill_gradient2() + coord_equal() +
+    labs(title = "Difference IDW - MBA", fill = "Diff") + theme_minimal()
+  
+  ## 2. K-fold CV (nested p selection for IDW) ----------------------------
+  set.seed(seed)
+  fold <- sample(rep(seq_len(K), length.out = n))
+  cv <- data.frame(id = seq_len(n), obs = z, IDW = NA_real_, MBA = NA_real_,
+                   p_used = NA_real_)
+  for (k in seq_len(K)) {
+    te <- which(fold == k); tr <- which(fold != k)
+    p_k <- choose_idw_p(coords[tr, ], z[tr], p_grid)$best_p
+    cv$p_used[te] <- p_k
+    cv$IDW[te] <- idw_predict(coords[tr, ], z[tr], coords[te, , drop = FALSE], p_k)
+    cv$MBA[te] <- mba_predict(coords[tr, ], z[tr], coords[te, , drop = FALSE], mba_args)
+  }
+  
+  ## 3. Metrics -----------------------------------------------------------
+  metr <- function(pred) c(MSE  = mean((cv$obs - pred)^2, na.rm = TRUE),
+                           RMSE = sqrt(mean((cv$obs - pred)^2, na.rm = TRUE)),
+                           MAE  = mean(abs(cv$obs - pred), na.rm = TRUE),
+                           n_NA = sum(is.na(pred)))
+  metrics <- rbind(IDW = metr(cv$IDW), MBA = metr(cv$MBA))
+  
+  ## 4. Diagnostics -------------------------------------------------------
+  err <- rbind(data.frame(method = "IDW", obs = cv$obs, pred = cv$IDW),
+               data.frame(method = "MBA", obs = cv$obs, pred = cv$MBA))
+  err$abs_err <- abs(err$obs - err$pred)
+  
+  p_obs <- ggplot(err, aes(obs, pred)) + geom_point(alpha = 0.7) +
+    geom_abline(colour = "red") + facet_wrap(~method) + coord_equal() +
+    labs(title = "Observed vs CV-predicted", x = "Observed", y = "Predicted") +
+    theme_minimal()
+  p_err <- ggplot(err, aes(method, abs_err)) + geom_boxplot() +
+    labs(title = "Absolute CV errors", y = "|error|", x = NULL) + theme_minimal()
+  
+  ok <- complete.cases(cv$IDW, cv$MBA)
+  wil <- wilcox.test(abs(cv$obs - cv$IDW)[ok], abs(cv$obs - cv$MBA)[ok],
+                     paired = TRUE)   # paired test on absolute errors
+  
+  list(best_p_full = sel$best_p, p_selection_plot = sel$plot,
+       grid = grid, cv = cv, metrics = metrics, wilcoxon = wil,
+       plots = list(maps = p_maps, diff = p_diff, obs_pred = p_obs, errors = p_err))
+}
+
+# ---- run on wolfcamp -----------------------------------------------------
+data(wolfcamp)
+res <- compare_interp(wolfcamp$coords, wolfcamp$data, ngrid = 20, K = 10)
+
+res$metrics                # MSE, RMSE, MAE (+ number of NA predictions)
+res$wilcoxon               # paired test on absolute errors
+table(res$cv$p_used)       # stability of the selected p across folds
+res$plots$maps; res$plots$diff; res$plots$obs_pred; res$plots$errors
+res$p_selection_plot
+```
+
+Multilevel bi-splines are better both in terms of MSE and MAE. Therefore it can be said that this method is better in that case to interpolate the data.
