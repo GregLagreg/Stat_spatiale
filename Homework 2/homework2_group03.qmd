@@ -1,0 +1,98 @@
+---
+title: "Homework 2"
+format: html
+  output-file: "rendered_html/homework2_group03.html"
+---
+
+stat desc : summary, map, semi variogram
+
+```{r}
+db <- dati |>
+  dplyr::filter(anno == 1973) |>
+  st_as_sf(coords = c("Lon10", "Lat10"), crs = 4326)
+
+```
+
+I work on a spatial data on rainfall and have measures from several stations in Italy. In my database there is a variable for the total amount of rain in the year
+
+```{r}
+ggplot() +
+  geom_sf(data = db, aes(color = totanno)) +
+  scale_color_viridis_c()
+```
+
+```{r}
+cor.test(db$totanno,db$Quota)
+ggplot(data = db, aes(x = Quota, y = totanno)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE, colour = "red")
+```
+
+```{r}
+choose_idw_p <- function(coords, z,
+                         p_grid = seq(0.5, 6, by = 0.25),
+                         nmax = Inf) {
+  
+  stopifnot(nrow(coords) == length(z))
+  n <- length(z)
+  
+  dat <- data.frame(x = coords[, 1], y = coords[, 2], z = z)
+  pts <- st_as_sf(dat, coords = c("x", "y"), crs = NA)
+  
+  # LOO predictions for a given p
+  loo_mse <- function(p) {
+    pred <- numeric(n)
+    for (i in seq_len(n)) {
+      out <- idw(z ~ 1,
+                 locations = pts[-i, ],
+                 newdata   = pts[i, ],
+                 idp       = p,
+                 nmax      = nmax,
+                 debug.level = 0)
+      pred[i] <- out$var1.pred
+    }
+    mean((z - pred)^2)
+  }
+  
+  mse <- vapply(p_grid, loo_mse, numeric(1))
+  res <- data.frame(p = p_grid, MSE = mse)
+  best_p <- res$p[which.min(res$MSE)]
+  
+  plt <- ggplot(res, aes(p, MSE)) +
+    geom_line() +
+    geom_point() +
+    geom_point(data = res[res$p == best_p, ], colour = "red", size = 3) +
+    geom_vline(xintercept = best_p, linetype = "dashed", colour = "red") +
+    labs(title = "Leave-one-out MSE for IDW",
+         subtitle = paste0("Best p = ", best_p,
+                           " (MSE = ", signif(min(res$MSE), 4), ")"),
+         x = "Power parameter p", y = "LOO MSE") +
+    theme_minimal()
+  
+  list(best_p = best_p, mse = res, plot = plt)
+}
+
+xy <- st_coordinates(db)
+
+out <- choose_idw_p(coords = xy,
+                    z      = db$totanno,
+                    p_grid = seq(0.5, 6, by = 0.25))
+
+out$best_p   # optimal p
+out$mse      # table of p vs MSE
+out$plot
+```
+
+```{r}
+db_utm  <- st_transform(db, 32632)
+grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
+idw_out <- idw(totanno ~ 1, locations = db_utm, newdata = grid_sf, idp = out$best_p)
+
+idw_df <- cbind(st_drop_geometry(idw_out), st_coordinates(idw_out))
+
+ggplot() +
+  geom_sf(data = idw_out, aes(color = var1.pred)) +
+  scale_color_viridis_c()
+
+ggplot()
+```
