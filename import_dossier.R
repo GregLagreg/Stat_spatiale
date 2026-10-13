@@ -1,0 +1,1 @@
+setwd("C:/Users/reych/OneDrive/Desktop/Bureau/La Sapienza/Corsi la sapienza/Spatial statistics and environment data/Stat_spatiale")

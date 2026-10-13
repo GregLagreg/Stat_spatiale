@@ -1,0 +1,95 @@
+---
+title: "Homework-2-Christophe"
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Exécute tout le code contenu dans le fichier .R
+source("Fonctions_utilisables.R")
+
+```
+
+```{r}
+
+#We create a dataset with only the observations made in 1974 
+data_1974 <- filter_target(donnees = dati, 
+                                     nom_variable = "anno", 
+                                     valeur_recherchee = 1974)
+```
+
+```{r}
+#| label: tableau-resume
+#| echo: false
+
+mon_tableau <- summary_statistics(data_1974)
+
+knitr::kable(mon_tableau, digits = 2)
+```
+
+```{r}
+#| label: ma-carte
+#| echo: false
+
+# We create a map with the points where the observations have been done
+map_observations(
+  donnees = data_1974, 
+  var_lon = "Lon10", 
+  var_lat = "Lat10"
+)
+```
+
+```{r}
+#| label: variogramm-pollution
+#| echo: false
+#| fig-cap: "Analyse of the spatial variance"
+
+
+variogramm(
+  donnees = data_1974,
+  var_x = "XUTM",
+  var_y = "YUTM",
+  var_output = "totanno", 
+  code_epsg = 32633
+)
+```
+
+```{r}
+#Now, we want to fond the optimal parameter p for the inverse distance weighted estimator
+
+#| label: optimisation-idw
+#| echo: true
+
+resultats_opti <- optimise_p_idw(donnees = data_1974, 
+                                  var_x = "XUTM", 
+                                  var_y = "YUTM", 
+                                  var_output = "totanno",
+                                  code_epsg = 32632)
+```
+
+```{r}
+install.packages(c("rnaturalearth", "rnaturalearthdata"))
+```
+
+```{r}
+library(rnaturalearth)
+# 2. We upload the map of Italy 
+borders_italie <- ne_countries(scale = "medium", country = "Italy", returnclass = "sf")
+```
+
+```{r}
+#| label: carte-idw-italie
+#| echo: true
+
+grid_idw(
+  donnees = data_1974, 
+  var_x = "XUTM", 
+  var_y = "YUTM", 
+  var_output = "totanno",
+  code_epsg = 32632, 
+  param_p = 3.5,
+  polygone_masque = borders_italie
+)
+```
