@@ -26,12 +26,12 @@ of rainfall with respect to latitude and longitude, that were giving
 interesting information but information that could have been better seen
 on a map. On top of that it didn't provide code for a semi-variogram
 which is essential for analyzing spatial dependence on continuous data.
-Other than that, the choice of p by cross-validati73on and the
+Other than that, the choice of p by cross-validation and the
 interpolation map are already quite good with the first prompt. With the
 second prompt Claude is giving indication on how to interpret the
 results, which is good.
 
-Other than that, the choice of p by cross-validati73on and the
+Other than that, the choice of p by cross-validation and the
 interpolation map are already quite good with the first prompt.
 
 ## Good prompt
@@ -43,7 +43,7 @@ interpolation map are already quite good with the first prompt.
 > relationship between the amount of rain and the elevation. Do basic
 > bivariate analysis (scatter plot with a line corresponding to the
 > linear model, measure of correlation and hypothesis test). Also do a
-> map of the rainfall and a semi-variogram. 2. Using cross-validati73on,
+> map of the rainfall and a semi-variogram. 2. Using cross-validation,
 > choose the optimal value for p in the IDW estimator, with respect to
 > the MSE . 3. Using the IDW estimator and the optimal p, map the
 > variable of interest on the grid given prediction grid (which is
@@ -181,7 +181,10 @@ that nearby stations are more similar than chance allows, so there is
 positive spatial correlation. This is the typical, expected pattern for
 rainfall.
 
-The IDW estimator at point $s_0$ is
+2.  Choice of p
+
+    Now, let's do choose p for the IDW. The IDW estimator at point $s_0$
+    is
 
 $$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
 
