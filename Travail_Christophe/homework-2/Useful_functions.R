@@ -153,7 +153,7 @@ optimise_p_idw <- function(dataset, var_x, var_y, var_output, code_epsg) {
 
 
 
-grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, polygone_masque) {
+grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map) {
   
   # 1. Spatial conversion of your data
   dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
@@ -164,10 +164,10 @@ grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, poly
   
   # 3. THE SCISSOR CUT (Clipping)
   # First ensure the mask has the same EPSG code as your data
-  polygone_masque <- st_transform(polygone_masque, crs = code_epsg)
+  map <- st_transform(map, crs = code_epsg)
   
   # Keep only the grid points that fall "inside" the mask
-  grille_clippee <- st_intersection(grille_sf, polygone_masque)
+  grille_clippee <- st_intersection(grille_sf, map)
   
   # 4. IDW Calculation (Only on solid ground!)
   formule <- as.formula(paste(var_output, "~ 1"))
@@ -182,7 +182,7 @@ grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, poly
   # 5. Map creation with borders in the background
   ggplot() +
     # Background layer: The border polygon (drawn in light gray)
-    geom_sf(data = polygone_masque, fill = "gray95", color = "black") +
+    geom_sf(data = map, fill = "gray95", color = "black") +
     
     # Interpolation layer: The predicted points
     geom_sf(data = idw_resultat, aes(color = var1.pred), size = 3, shape = 15) +

@@ -8,25 +8,25 @@ format: html
 #| include: false
 
 # Exécute tout le code contenu dans le fichier .R
-source("Fonctions_utilisables.R")
+source("Useful_functions.R")
 
 ```
 
 ```{r}
 
 #We create a dataset with only the observations made in 1974 
-data_1974 <- filter_target(donnees = dati, 
-                                     nom_variable = "anno", 
-                                     valeur_recherchee = 1974)
+data_1974 <- filter_target(data = dati, 
+                                     variable = "anno", 
+                                     target = 1974)
 ```
 
 ```{r}
 #| label: tableau-resume
 #| echo: false
 
-mon_tableau <- summary_statistics(data_1974)
+board <- summary_statistics(data_1974)
 
-knitr::kable(mon_tableau, digits = 2)
+knitr::kable(board, digits = 2)
 ```
 
 ```{r}
@@ -35,7 +35,7 @@ knitr::kable(mon_tableau, digits = 2)
 
 # We create a map with the points where the observations have been done
 map_observations(
-  donnees = data_1974, 
+  data = data_1974, 
   var_lon = "Lon10", 
   var_lat = "Lat10"
 )
@@ -48,11 +48,11 @@ map_observations(
 
 
 variogramm(
-  donnees = data_1974,
+  data = data_1974,
   var_x = "XUTM",
   var_y = "YUTM",
   var_output = "totanno", 
-  code_epsg = 32633
+  code_epsg = 32632
 )
 ```
 
@@ -62,7 +62,7 @@ variogramm(
 #| label: optimisation-idw
 #| echo: true
 
-resultats_opti <- optimise_p_idw(donnees = data_1974, 
+resultats_opti <- optimise_p_idw(data = data_1974, 
                                   var_x = "XUTM", 
                                   var_y = "YUTM", 
                                   var_output = "totanno",
@@ -84,12 +84,12 @@ borders_italie <- ne_countries(scale = "medium", country = "Italy", returnclass 
 #| echo: true
 
 grid_idw(
-  donnees = data_1974, 
+  data = data_1974, 
   var_x = "XUTM", 
   var_y = "YUTM", 
   var_output = "totanno",
   code_epsg = 32632, 
   param_p = 3.5,
-  polygone_masque = borders_italie
+  map = borders_italie
 )
 ```
