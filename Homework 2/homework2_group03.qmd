@@ -1,11 +1,18 @@
 ---
 title: "Homework 2"
 format: html
-  output-file: "rendered_html/homework2_group03.html"
 editor: 
   markdown: 
     wrap: 72
 ---
+
+```{r}
+load("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/Italie/Spatial statistics/Stat_spatiale/data/RainData.RData")
+
+library(ggplot2)
+library(gstat)
+library(sf)
+```
 
 # ANNO 1973
 
@@ -17,7 +24,7 @@ I work on a spatial data on rainfall and have measures from several stations in 
  
 3) Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid (which is stored in grid$XUTM and grid$YUTM).
 
-### Exploratory analysis
+1. Exploratory analysis
 ```{r}
 dati <- dati |>
   dplyr::filter(anno == 1973)
@@ -95,7 +102,7 @@ ggplot(dati, aes(XUTM, YUTM, colour = res_loc)) +
 
 ```
 
-### Choice of p
+2. Choice of p
 ```{r}
 # IDW prediction at a single point (x0, y0)
 idw_point <- function(x0, y0, x, y, z, p) {
@@ -142,7 +149,7 @@ plot(z, idw_loocv(p_opt), pch = 19, col = rgb(0, 0, 1, 0.5),
 abline(0, 1, col = "red", lwd = 2)
 
 ```
-### Interpolation by IDW
+3. Interpolation by IDW
 ```{r}
 pts     <- st_as_sf(dati, coords = c("XUTM", "YUTM"), crs = 32632)
 grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
@@ -180,9 +187,9 @@ Data
 * dati is a data.frame with columns totanno (annual rainfall, mm), Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM (metres, EPSG:32632), and anno (year). It originally has 2373 rows (about 190 stations over several years). I have already filtered it to a single year, so it now has one row per station and no duplicated coordinates.
 * grid is a data.frame with columns XUTM and YUTM. It has 1005 rows and is not a regular grid: every point has unique X and Y values, with irregular spacing. Please plot it as points, not with geom_tile/geom_raster.
 
-## 1. Exploratory data analysis
+1. Exploratory data analysis
 
-### 1.1 Distribution of annual rainfall
+1.1 Distribution of annual rainfall
 
 ```{r}
 #| label: eda-rain
@@ -205,7 +212,7 @@ shapiro.test(dati$totanno)
 
 **How to assess:** skewness near 0 and points along the Q-Q line suggest approximate normality; a clearly positive skewness, a right tail in the histogram or points leaving the line at the top indicate a skewed distribution. The Shapiro-Wilk p-value below 0.05 rejects normality. Points beyond the boxplot whiskers are candidate outliers: check whether they are real (very wet mountain stations) or data errors.
 
-### 1.2 Rainfall vs elevation
+1.2 Rainfall vs elevation
 
 ```{r}
 #| label: rain-elev
@@ -248,7 +255,7 @@ plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
 - *Model validity:* in the diagnostic plots, residuals vs fitted should show no curve or funnel, and the Q-Q plot no strong departures.
 - *Caveat:* the p-values assume independent observations. If the residual semivariogram is not flat (it rises with distance), the stations are spatially correlated and the p-values are optimistic.
 
-### 1.3 Map of the rainfall
+1.3 Map of the rainfall
 
 ```{r}
 #| label: map-rain
@@ -262,7 +269,7 @@ ggplot(dati, aes(XUTM, YUTM, colour = totanno)) +
 
 **How to assess:** look for large-scale patterns (gradients, clusters of similar colours) and compare them with elevation. Neighbouring stations with similar colours support spatial dependence; also note where stations are sparse, since predictions there will be less reliable.
 
-### 1.4 Empirical semivariogram
+1.4 Empirical semivariogram
 
 ```{r}
 #| label: variogram
@@ -318,7 +325,7 @@ ggplot(env, aes(dist / 1000)) +
 - *Reading the shape:* nugget (value at distance 0) = measurement error plus variation at scales smaller than the station spacing; sill = total variance where the curve flattens; range = distance beyond which stations are essentially uncorrelated. Compare the fitted sill with `var(dati$totanno)`: they should be of the same order, unless there is a trend (a semivariogram that keeps growing without flattening suggests a trend, e.g. with elevation).
 - *Fit quality:* lower `SSErr` means a better fit among the three candidates, but always check visually that the curve follows the points, mainly the first lags (those with a large `np`).
 
-## 2. Choice of p in IDW by leave-one-out cross-validation
+2. Choice of p in IDW by leave-one-out cross-validation
 
 The IDW estimator at point $s_0$ is
 
@@ -327,7 +334,7 @@ $$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
 For each station $i$ I remove it, predict it from the other $n-1$, and compute $\mathrm{MSE}(p)=\frac1n\sum_i(z_i-\hat z_{-i})^2$.
 
 ```{r}
-#| label: idw-cv
+#| label: idw-cv-1973-good
 #| fig-height: 4.5
 X <- cbind(dati$XUTM, dati$YUTM)
 z <- dati$totanno
@@ -385,7 +392,7 @@ cat("Correlation obs vs LOO prediction:", round(cor(z, cv_pred), 3), "\n")
 - *Does IDW beat a trivial predictor?* The relative skill should be clearly positive (1 = perfect, 0 = no better than the mean). Points close to the red 1:1 line confirm good predictions; systematic departures at high or low values (IDW smooths extremes) show its bias.
 - *Caveat:* the minimum CV MSE is slightly optimistic because the same data both choose p and evaluate it. For a stricter check, repeat with k-fold CV or hold out some stations.
 
-## 3. IDW map on the prediction grid
+3. IDW map on the prediction grid
 
 ```{r}
 #| label: idw-grid
@@ -440,63 +447,13 @@ cat("Typical station spacing (median nearest-neighbour distance, km):",
 - *Match with the data:* where the circles (observations) and the small points (predictions) have the same colour, the map reproduces the data. Visible "bull's-eyes" around isolated stations are typical of IDW with large p.
 - *Reliability:* grid points whose distance to the nearest station is much larger than the typical station spacing (last two outputs) are extrapolations; read the map there with caution.
 - *No uncertainty measure:* IDW does not give prediction variances. If you need them, kriging with the semivariogram fitted in Section 1.4 is the natural next step.
-```{r}
-#| label: bivariate-analysis
 
-# --- Bivariate Analysis: Rainfall vs Elevation ---
-ggplot(dati, aes(x = Quota, y = totanno)) +
-  geom_point(alpha = 0.6) +
-  geom_smooth(method = "lm", color = "red", se = TRUE) +
-  theme_minimal() +
-  labs(title = "Rainfall vs. Elevation", x = "Elevation (m)", y = "Rainfall (mm)")
 
-# Correlation and Hypothesis Test
-cor_test <- cor.test(dati$Quota, dati$totanno, method = "pearson")
-cor_test
-```
 
-```{r}
-#| label: spatial-mapping
+## Comparison of the results
+With the first prompt, Claude Sonnet fitted a linear regression of the amount of rainfall on the the elevation, the latitude and the longitude, which doesn't make much sense. The effects observed in plots of rainfall with respect to latitude and longitude are interesting but can be better seen on the map. On top of that it didn't provide code for a semi-variogram which is essential for analyzing spatial dependence on continuous data. Although it did make a good map and plotted rainfall against elevation.
+With the second prompt Claude is giving indication on how to interpret the results, which is good.
 
-# --- Map of Rainfall ---
-ggplot(dati_sf) +
-  geom_sf(aes(color = totanno), size = 2) +
-  scale_color_viridis_c() +
-  theme_minimal() +
-  labs(title = "Rainfall Stations in Italy (1973)", color = "Rainfall (mm)")
-```
-```{r}
-#| label: semi-variogram
+Other than that, the choice of p by cross-validation and the interpolation map are already quite good with the first prompt. 
 
-# --- Semi-variogram ---
-# Calculate empirical variogram
-v <- variogram(totanno ~ 1, dati_sf)
-plot(v, main = "Empirical Semi-variogram of Rainfall")
-```
-```{r}
-#| label: idw-cv
-
-# Define a sequence of p values to test
-p_values <- seq(0.5, 5, by = 0.5)
-mse_values <- numeric(length(p_values))
-
-# Perform Leave-One-Out Cross-Validation (LOOCV) for each p
-for(i in seq_along(p_values)) {
-  gs <- gstat(formula = totanno ~ 1, locations = dati_sf, set = list(idp = p_values[i]))
-  cv_out <- gstat.cv(gs, debug.level = 0)
-  mse_values[i] <- mean(cv_out$residual^2)
-}
-
-# Find the optimal p
-optimal_p <- p_values[which.min(mse_values)]
-min_mse <- min(mse_values)
-
-# Plot MSE vs p
-plot(p_values, mse_values, type = "b", pch = 19, col = "blue",
-     xlab = "Power (p)", ylab = "Mean Squared Error (MSE)",
-     main = "IDW Cross-Validation")
-abline(v = optimal_p, col = "red", lty = 2)
-
-cat("Optimal p:", optimal_p, "\nMinimum MSE:", min_mse, "\n")
-```
 
