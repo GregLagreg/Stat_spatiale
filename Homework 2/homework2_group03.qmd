@@ -1,98 +1,459 @@
 ---
 title: "Homework 2"
 format: html
-  output-file: "rendered_html/homework2_group03.html"
+editor: 
+  markdown: 
+    wrap: 72
 ---
 
-stat desc : summary, map, semi variogram
-
 ```{r}
-db <- dati |>
-  dplyr::filter(anno == 1973) |>
-  st_as_sf(coords = c("Lon10", "Lat10"), crs = 4326)
+load("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/Italie/Spatial statistics/Stat_spatiale/data/RainData.RData")
+
+library(ggplot2)
+library(gstat)
+library(sf)
+```
+
+# ANNO 1973
+
+## Weak prompt
+I work on a spatial data on rainfall and have measures from several stations in Italy. In my database "dati" there is a variable for the total amount of rain in the year named "totanno", elevation in the variable Quota,  coords in the variables Lat10 and Lon10 and distance in metre in XUTM and YUTM. Code in R and follow these instructions : 
+ 1) Run an exploratory data analysis and comment on the results. In particular, analyze the relationship between the amount of rain and the elevation and between the amount of rain and the localisation. 
+ 
+2) Using cross-validation, choose the optimal value for p in the IDW estimator . 
+ 
+3) Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid (which is stored in grid$XUTM and grid$YUTM).
+
+1. Exploratory analysis
+```{r}
+dati <- dati |>
+  dplyr::filter(anno == 1973)
+str(dati)
+summary(dati[, c("totanno", "Quota", "Lat10", "Lon10", "XUTM", "YUTM")])
+colSums(is.na(dati[, c("totanno", "Quota", "Lat10", "Lon10", "XUTM", "YUTM")]))
+ 
+# Duplicated station locations would break IDW (distance = 0)
+sum(duplicated(dati[, c("XUTM", "YUTM")]))
+ 
+## 1a) Univariate distribution of rainfall and elevation
+par(mfrow = c(2, 3))
+hist(dati$totanno, breaks = 20, col = "lightblue", main = "Annual rainfall",
+     xlab = "totanno (mm)")
+boxplot(dati$totanno, main = "Annual rainfall", col = "lightblue")
+qqnorm(dati$totanno, main = "QQ-plot rainfall"); qqline(dati$totanno)
+hist(dati$Quota, breaks = 20, col = "lightgreen", main = "Elevation",
+     xlab = "Quota (m)")
+boxplot(dati$Quota, main = "Elevation", col = "lightgreen")
+qqnorm(dati$Quota, main = "QQ-plot elevation"); qqline(dati$Quota)
+par(mfrow = c(1, 1))
+ 
+## 1b) Rainfall vs elevation
+plot(dati$Quota, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
+     xlab = "Elevation (m)", ylab = "Annual rainfall (mm)",
+     main = "Rainfall vs elevation")
+lines(lowess(dati$Quota, dati$totanno), col = "red", lwd = 2)
+abline(lm(totanno ~ Quota, data = dati), col = "darkgreen", lwd = 2, lty = 2)
+legend("topright", c("lowess", "linear fit"), col = c("red", "darkgreen"),
+       lwd = 2, lty = c(1, 2), bty = "n")
+ 
+cor(dati$Quota, dati$totanno)                       # Pearson
+cor(dati$Quota, dati$totanno, method = "spearman")  # Spearman
+summary(lm(totanno ~ Quota, data = dati))
+ 
+## 1c) Rainfall vs location
+par(mfrow = c(1, 2))
+plot(dati$Lon10, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
+     xlab = "Longitude", ylab = "Annual rainfall (mm)", main = "Rainfall vs longitude")
+lines(lowess(dati$Lon10, dati$totanno), col = "red", lwd = 2)
+plot(dati$Lat10, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
+     xlab = "Latitude", ylab = "Annual rainfall (mm)", main = "Rainfall vs latitude")
+lines(lowess(dati$Lat10, dati$totanno), col = "red", lwd = 2)
+par(mfrow = c(1, 1))
+ 
+cor(dati[, c("totanno", "Quota", "Lat10", "Lon10")])
+ 
+# Linear trend surface, with and without elevation
+m_loc     <- lm(totanno ~ XUTM + YUTM, data = dati)
+m_loc_q   <- lm(totanno ~ XUTM + YUTM + Quota, data = dati)
+m_loc_q2  <- lm(totanno ~ poly(XUTM, YUTM, degree = 2) + Quota, data = dati)
+summary(m_loc); summary(m_loc_q)
+anova(m_loc, m_loc_q, m_loc_q2)
+ 
+## 1d) Map of the stations: rainfall and elevation
+ggplot(dati, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
+  coord_equal() + theme_minimal() +
+  ggtitle("Annual rainfall at the stations")
+ 
+ggplot(dati, aes(XUTM, YUTM, colour = Quota)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "magma", name = "Elevation (m)") +
+  coord_equal() + theme_minimal() +
+  ggtitle("Elevation of the stations")
+ 
+## 1e) Residuals of the location model: is there remaining spatial structure?
+dati$res_loc <- residuals(m_loc)
+ggplot(dati, aes(XUTM, YUTM, colour = res_loc)) +
+  geom_point(size = 2.5) +
+  scale_colour_gradient2(low = "red", mid = "white", high = "blue", name = "Residual") +
+  coord_equal() + theme_minimal() +
+  ggtitle("Residuals of lm(totanno ~ XUTM + YUTM)")
 
 ```
 
-I work on a spatial data on rainfall and have measures from several stations in Italy. In my database there is a variable for the total amount of rain in the year
-
+2. Choice of p
 ```{r}
+# IDW prediction at a single point (x0, y0)
+idw_point <- function(x0, y0, x, y, z, p) {
+  d <- sqrt((x - x0)^2 + (y - y0)^2)
+  if (any(d == 0)) return(mean(z[d == 0]))
+  w <- 1 / d^p
+  sum(w * z) / sum(w)
+}
+ 
+x <- dati$XUTM; y <- dati$YUTM; z <- dati$totanno
+n <- nrow(dati)
+ 
+# Station-to-station distance matrix (computed once)
+D <- as.matrix(dist(cbind(x, y)))
+diag(D) <- Inf   # leave-one-out: a station never predicts itself
+ 
+# Leave-one-out predictions for a given p
+idw_loocv <- function(p) {
+  W <- D^(-p)                 # diag becomes 0 since Inf^(-p) = 0
+  as.numeric(W %*% z / rowSums(W))
+}
+ 
+p_grid <- seq(0.1, 6, by = 0.1)
+cv <- t(sapply(p_grid, function(p) {
+  e <- z - idw_loocv(p)
+  c(p = p, RMSE = sqrt(mean(e^2)), MAE = mean(abs(e)))
+}))
+cv <- as.data.frame(cv)
+ 
+p_opt <- cv$p[which.min(cv$RMSE)]
+cat("Optimal p (min LOO-CV RMSE):", p_opt, "\n")
+cat("RMSE at p_opt:", min(cv$RMSE), "\n")
+ 
+ggplot(cv, aes(p, RMSE)) +
+  geom_line() + geom_point(size = 1) +
+  geom_vline(xintercept = p_opt, colour = "red", linetype = 2) +
+  theme_minimal() +
+  ggtitle(paste("LOO cross-validation RMSE - optimal p =", p_opt))
+ 
+# Observed vs predicted at the optimal p
+plot(z, idw_loocv(p_opt), pch = 19, col = rgb(0, 0, 1, 0.5),
+     xlab = "Observed", ylab = "LOO-CV prediction",
+     main = paste("IDW cross-validation, p =", p_opt))
+abline(0, 1, col = "red", lwd = 2)
+
+```
+3. Interpolation by IDW
+```{r}
+pts     <- st_as_sf(dati, coords = c("XUTM", "YUTM"), crs = 32632)
+grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
+
+idw_out <- idw(totanno ~ 1, locations = pts, newdata = grid_sf,
+               idp = p_opt, debug.level = 0)
+
 ggplot() +
-  geom_sf(data = db, aes(color = totanno)) +
-  scale_color_viridis_c()
+  geom_sf(data = idw_out, aes(colour = var1.pred), shape = 15, size = 1.5) +
+  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
+  theme_minimal() +
+  ggtitle(paste("IDW prediction of annual rainfall (p =", p_opt, ")"))
+
+ggplot() +
+  geom_sf(data = idw_out, aes(colour = var1.pred), shape = 15, size = 1.5) +
+  geom_sf(data = pts, shape = 21, size = 1, fill = "white",
+          colour = "black", alpha = 0.7) +
+  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
+  theme_minimal() +
+  ggtitle(paste("IDW prediction of annual rainfall (p =", p_opt, ")"))
+
+```
+## Good prompt
+I work on a spatial data on rainfall and have measures from several stations in Italy, I will only study the year 1973. Code in R in cells that can be added in a quarto document.
+Follow these instructions :
+1. Run an exploratory data analysis on the rainfall itself. Analyze the relationship between the amount of rain and the elevation. Do basic bivariate analysis (scatter plot with a line corresponding to the linear model, measure of correlation and hypothesis test). Also do a map of the rainfall and a semi-variogram.
+2. Using cross-validation, choose the optimal value for p in the IDW estimator, with respect to the MSE .
+3. Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid (which is stored in gridXUTM and gridYUTM).
+
+Preferences:
+* Use XUTM/YUTM for both stations and grid, in EPSG:32632, with no reprojection.
+* For each conclusion done let me a way to assess the result
+
+Data
+* dati is a data.frame with columns totanno (annual rainfall, mm), Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM (metres, EPSG:32632), and anno (year). It originally has 2373 rows (about 190 stations over several years). I have already filtered it to a single year, so it now has one row per station and no duplicated coordinates.
+* grid is a data.frame with columns XUTM and YUTM. It has 1005 rows and is not a regular grid: every point has unique X and Y values, with irregular spacing. Please plot it as points, not with geom_tile/geom_raster.
+
+1. Exploratory data analysis
+
+1.1 Distribution of annual rainfall
+
+```{r}
+#| label: eda-rain
+#| fig-height: 4
+summary(dati$totanno)
+cat("SD:", sd(dati$totanno), "| CV:", sd(dati$totanno) / mean(dati$totanno), "\n")
+
+# skewness (moment estimator)
+skew <- mean((dati$totanno - mean(dati$totanno))^3) / sd(dati$totanno)^3
+cat("Skewness:", round(skew, 3), "\n")
+
+op <- par(mfrow = c(1, 3))
+hist(dati$totanno, breaks = 20, col = "grey80", main = "Histogram", xlab = "Annual rainfall (mm)")
+boxplot(dati$totanno, main = "Boxplot", ylab = "mm")
+qqnorm(dati$totanno, main = "Normal Q-Q"); qqline(dati$totanno)
+par(op)
+
+shapiro.test(dati$totanno)
+```
+
+**How to assess:** skewness near 0 and points along the Q-Q line suggest approximate normality; a clearly positive skewness, a right tail in the histogram or points leaving the line at the top indicate a skewed distribution. The Shapiro-Wilk p-value below 0.05 rejects normality. Points beyond the boxplot whiskers are candidate outliers: check whether they are real (very wet mountain stations) or data errors.
+
+1.2 Rainfall vs elevation
+
+```{r}
+#| label: rain-elev
+#| fig-height: 4.5
+ggplot(dati, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)",
+       title = "Rainfall vs elevation, 1973")
+
+# correlation measures and tests
+ct_p <- cor.test(dati$Quota, dati$totanno, method = "pearson")
+ct_s <- cor.test(dati$Quota, dati$totanno, method = "spearman", exact = FALSE)
+ct_p
+ct_s
+
+# simple linear model
+fit_lm <- lm(totanno ~ Quota, data = dati)
+summary(fit_lm)
+confint(fit_lm)
 ```
 
 ```{r}
-cor.test(db$totanno,db$Quota)
-ggplot(data = db, aes(x = Quota, y = totanno)) +
-  geom_point() +
-  geom_smooth(method = "lm", formula = y ~ x, se = TRUE, colour = "red")
+#| label: lm-diagnostics
+#| fig-height: 5
+op <- par(mfrow = c(2, 2)); plot(fit_lm); par(op)
+
+shapiro.test(residuals(fit_lm))
+
+# is there leftover spatial structure in the residuals?
+dati$res_lm <- residuals(fit_lm)
+vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = dati)
+plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+```
+
+**How to assess:**
+
+- *Association:* Pearson tests the linear relationship, Spearman the monotone one. A small p-value (below 0.05) rejects "no association"; the sign gives the direction. If Pearson and Spearman differ a lot, the relationship is non-linear or driven by outliers.
+- *Strength:* $R^2$ in `summary(fit_lm)` is the share of rainfall variance explained by elevation alone (and equals the Pearson correlation squared). The slope is in mm of rain per metre of elevation; use `confint` to see whether 0 is excluded.
+- *Model validity:* in the diagnostic plots, residuals vs fitted should show no curve or funnel, and the Q-Q plot no strong departures.
+- *Caveat:* the p-values assume independent observations. If the residual semivariogram is not flat (it rises with distance), the stations are spatially correlated and the p-values are optimistic.
+
+1.3 Map of the rainfall
+
+```{r}
+#| label: map-rain
+#| fig-height: 6
+ggplot(dati, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1973")
+```
+
+**How to assess:** look for large-scale patterns (gradients, clusters of similar colours) and compare them with elevation. Neighbouring stations with similar colours support spatial dependence; also note where stations are sparse, since predictions there will be less reliable.
+
+1.4 Empirical semivariogram
+
+```{r}
+#| label: variogram
+#| fig-height: 4.5
+v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = dati)
+v   # np = number of pairs per lag; be wary of lags with few pairs
+
+# fit three standard models and compare the weighted sum of squares
+start_nug <- min(v$gamma)
+start_sill <- max(v$gamma) - start_nug
+start_rng <- max(v$dist) / 3
+
+models <- c("Exp", "Sph", "Gau")
+fits <- lapply(models, function(m)
+  fit.variogram(v, vgm(psill = start_sill, model = m, range = start_rng, nugget = start_nug)))
+names(fits) <- models
+sse <- sapply(fits, function(f) attr(f, "SSErr"))
+print(sse)
+
+best <- names(which.min(sse))
+fit_v <- fits[[best]]
+cat("Best model:", best, "\n"); print(fit_v)
+
+plot(v, model = fit_v, main = paste("Empirical semivariogram and fitted", best, "model"))
 ```
 
 ```{r}
-choose_idw_p <- function(coords, z,
-                         p_grid = seq(0.5, 6, by = 0.25),
-                         nmax = Inf) {
-  
-  stopifnot(nrow(coords) == length(z))
-  n <- length(z)
-  
-  dat <- data.frame(x = coords[, 1], y = coords[, 2], z = z)
-  pts <- st_as_sf(dat, coords = c("x", "y"), crs = NA)
-  
-  # LOO predictions for a given p
-  loo_mse <- function(p) {
-    pred <- numeric(n)
-    for (i in seq_len(n)) {
-      out <- idw(z ~ 1,
-                 locations = pts[-i, ],
-                 newdata   = pts[i, ],
-                 idp       = p,
-                 nmax      = nmax,
-                 debug.level = 0)
-      pred[i] <- out$var1.pred
-    }
-    mean((z - pred)^2)
-  }
-  
-  mse <- vapply(p_grid, loo_mse, numeric(1))
-  res <- data.frame(p = p_grid, MSE = mse)
-  best_p <- res$p[which.min(res$MSE)]
-  
-  plt <- ggplot(res, aes(p, MSE)) +
-    geom_line() +
-    geom_point() +
-    geom_point(data = res[res$p == best_p, ], colour = "red", size = 3) +
-    geom_vline(xintercept = best_p, linetype = "dashed", colour = "red") +
-    labs(title = "Leave-one-out MSE for IDW",
-         subtitle = paste0("Best p = ", best_p,
-                           " (MSE = ", signif(min(res$MSE), 4), ")"),
-         x = "Power parameter p", y = "LOO MSE") +
-    theme_minimal()
-  
-  list(best_p = best_p, mse = res, plot = plt)
+#| label: variogram-envelope
+#| fig-height: 4.5
+# Monte Carlo envelope under spatial independence: permute the values over the stations
+set.seed(1973)
+nsim <- 99
+sims <- replicate(nsim, {
+  tmp <- dati
+  tmp$totanno <- sample(tmp$totanno)
+  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
+            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
+})
+env <- data.frame(dist = v$dist, gamma = v$gamma,
+                  lo = apply(sims, 1, min, na.rm = TRUE),
+                  hi = apply(sims, 1, max, na.rm = TRUE))
+
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance",
+       title = "Empirical semivariogram vs envelope under no spatial correlation")
+```
+
+**How to assess:**
+
+- *Is there spatial correlation at all?* Empirical points that fall below the grey envelope at short distances mean that close stations are more similar than random (spatial dependence). If the points stay inside the envelope, there is little evidence of structure.
+- *Reading the shape:* nugget (value at distance 0) = measurement error plus variation at scales smaller than the station spacing; sill = total variance where the curve flattens; range = distance beyond which stations are essentially uncorrelated. Compare the fitted sill with `var(dati$totanno)`: they should be of the same order, unless there is a trend (a semivariogram that keeps growing without flattening suggests a trend, e.g. with elevation).
+- *Fit quality:* lower `SSErr` means a better fit among the three candidates, but always check visually that the curve follows the points, mainly the first lags (those with a large `np`).
+
+2. Choice of p in IDW by leave-one-out cross-validation
+
+The IDW estimator at point $s_0$ is
+
+$$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
+
+For each station $i$ I remove it, predict it from the other $n-1$, and compute $\mathrm{MSE}(p)=\frac1n\sum_i(z_i-\hat z_{-i})^2$.
+
+```{r}
+#| label: idw-cv-1973-good
+#| fig-height: 4.5
+X <- cbind(dati$XUTM, dati$YUTM)
+z <- dati$totanno
+D <- as.matrix(dist(X))
+diag(D) <- Inf                       # leave-one-out: a station never predicts itself
+
+cv_mse <- function(p) {
+  W <- 1 / D^p                       # Inf^p = Inf -> weight 0 on the diagonal
+  pred <- as.vector(W %*% z) / rowSums(W)
+  mean((z - pred)^2)
 }
 
-xy <- st_coordinates(db)
+p_grid <- seq(0.25, 8, by = 0.25)
+cv <- data.frame(p = p_grid, MSE = sapply(p_grid, cv_mse))
 
-out <- choose_idw_p(coords = xy,
-                    z      = db$totanno,
-                    p_grid = seq(0.5, 6, by = 0.25))
+# refine around the minimum of the coarse grid
+p0 <- cv$p[which.min(cv$MSE)]
+opt <- optimize(cv_mse, interval = c(max(0.01, p0 - 0.25), p0 + 0.25))
+p_opt <- opt$minimum
+cat("Optimal p:", round(p_opt, 3), "| CV MSE:", round(opt$objective, 1),
+    "| CV RMSE:", round(sqrt(opt$objective), 1), "mm\n")
 
-out$best_p   # optimal p
-out$mse      # table of p vs MSE
-out$plot
+ggplot(cv, aes(p, MSE)) +
+  geom_line() + geom_point(size = 1) +
+  geom_vline(xintercept = p_opt, linetype = 2, colour = "firebrick") +
+  geom_hline(yintercept = var(z) * n / (n - 1)^2 * n, linetype = 3, colour = "grey40") +
+  labs(title = "Leave-one-out MSE as a function of p",
+       subtitle = "Dashed red: optimal p. Dotted grey: MSE of predicting each station with the mean of the others")
 ```
 
 ```{r}
-db_utm  <- st_transform(db, 32632)
-grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
-idw_out <- idw(totanno ~ 1, locations = db_utm, newdata = grid_sf, idp = out$best_p)
+#| label: idw-cv-check
+#| fig-height: 4.5
+# observed vs predicted at p_opt
+W <- 1 / D^p_opt
+cv_pred <- as.vector(W %*% z) / rowSums(W)
 
-idw_df <- cbind(st_drop_geometry(idw_out), st_coordinates(idw_out))
+ggplot(data.frame(obs = z, pred = cv_pred), aes(pred, obs)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, colour = "firebrick") +
+  coord_equal() +
+  labs(x = "LOO prediction (mm)", y = "Observed (mm)", title = "Cross-validation at the optimal p")
+
+# skill with respect to the trivial predictor (mean of the other stations)
+mse_mean <- mean((z - (sum(z) - z) / (n - 1))^2)
+cat("MSE IDW:", round(opt$objective, 1), "| MSE mean-of-others:", round(mse_mean, 1),
+    "| relative skill:", round(1 - opt$objective / mse_mean, 3), "\n")
+cat("Correlation obs vs LOO prediction:", round(cor(z, cv_pred), 3), "\n")
+```
+
+**How to assess:**
+
+- *Is the optimum a real minimum?* The red line should sit in the interior of the MSE curve, with MSE rising on both sides. If the minimum falls at the edge of the tested range (0.25 or 8), extend `p_grid`.
+- *Is it well determined?* A very flat curve around the minimum means that nearby values of p are practically equivalent, so the choice is not critical.
+- *Does IDW beat a trivial predictor?* The relative skill should be clearly positive (1 = perfect, 0 = no better than the mean). Points close to the red 1:1 line confirm good predictions; systematic departures at high or low values (IDW smooths extremes) show its bias.
+- *Caveat:* the minimum CV MSE is slightly optimistic because the same data both choose p and evaluate it. For a stricter check, repeat with k-fold CV or hold out some stations.
+
+3. IDW map on the prediction grid
+
+```{r}
+#| label: idw-grid
+#| fig-height: 6.5
+idw_predict <- function(x0, y0, x, y, z, p) {
+  d <- sqrt(outer(x0, x, "-")^2 + outer(y0, y, "-")^2)
+  d[d < 1e-6] <- 1e-6                # a grid point on a station returns (almost exactly) that station's value
+  W <- 1 / d^p
+  as.vector(W %*% z) / rowSums(W)
+}
+
+grid$pred <- idw_predict(grid$XUTM, grid$YUTM, dati$XUTM, dati$YUTM, dati$totanno, p_opt)
+
+# distance of each grid point to the nearest station (for diagnostics)
+grid$d_nn <- apply(sqrt(outer(grid$XUTM, dati$XUTM, "-")^2 + outer(grid$YUTM, dati$YUTM, "-")^2), 1, min)
 
 ggplot() +
-  geom_sf(data = idw_out, aes(color = var1.pred)) +
-  scale_color_viridis_c()
-
-ggplot()
+  geom_point(data = grid, aes(XUTM, YUTM, colour = pred), size = 2.5) +
+  geom_point(data = dati, aes(XUTM, YUTM), shape = 4, colour = "black", size = 1) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)",
+       title = paste0("IDW prediction of annual rainfall, 1973 (p = ", round(p_opt, 2), ")"),
+       subtitle = "Black crosses: stations")
 ```
+
+```{r}
+#| label: idw-grid-checks
+#| fig-height: 5
+# 1) no missing values and predictions within the observed range (IDW is a weighted average)
+cat("NA predictions:", sum(is.na(grid$pred)), "\n")
+rbind(observed = range(dati$totanno), predicted = range(grid$pred))
+
+# 2) same colour scale as the station map, to compare the two directly
+ggplot() +
+  geom_point(data = grid, aes(XUTM, YUTM, colour = pred), size = 1.6, alpha = 0.6) +
+  geom_point(data = dati, aes(XUTM, YUTM, fill = totanno), shape = 21, size = 2.8, colour = "black") +
+  scale_colour_viridis_c(option = "C", limits = range(dati$totanno), name = "pred") +
+  scale_fill_viridis_c(option = "C", limits = range(dati$totanno), name = "obs") +
+  coord_equal() +
+  labs(title = "Predictions (small) and observations (circles) on the same scale")
+
+# 3) how far are grid points from data? (IDW is unreliable far from stations)
+summary(grid$d_nn / 1000)   # km
+cat("Typical station spacing (median nearest-neighbour distance, km):",
+    round(median(apply(D, 1, min)) / 1000, 1), "\n")
+```
+
+**How to assess:**
+
+- *Basic consistency:* no `NA`, and the predicted range must fall inside the observed range (IDW with positive weights can never exceed it; if it does, there is a bug). Because of this, IDW cannot predict peaks above the highest station, nor the valleys below the lowest, and the map looks smoother than reality.
+- *Match with the data:* where the circles (observations) and the small points (predictions) have the same colour, the map reproduces the data. Visible "bull's-eyes" around isolated stations are typical of IDW with large p.
+- *Reliability:* grid points whose distance to the nearest station is much larger than the typical station spacing (last two outputs) are extrapolations; read the map there with caution.
+- *No uncertainty measure:* IDW does not give prediction variances. If you need them, kriging with the semivariogram fitted in Section 1.4 is the natural next step.
+
+
+
+## Comparison of the results
+With the first prompt, Claude Sonnet fitted a linear regression of the amount of rainfall on the the elevation, the latitude and the longitude, which doesn't make much sense. The effects observed in plots of rainfall with respect to latitude and longitude are interesting but can be better seen on the map. On top of that it didn't provide code for a semi-variogram which is essential for analyzing spatial dependence on continuous data. Although it did make a good map and plotted rainfall against elevation.
+With the second prompt Claude is giving indication on how to interpret the results, which is good.
+
+Other than that, the choice of p by cross-validation and the interpolation map are already quite good with the first prompt. 
+
+
