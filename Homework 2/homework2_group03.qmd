@@ -1,13 +1,15 @@
 ---
 title: "Homework 2"
-format: html
+format: 
+  html : 
+    embed-resources: true
 editor: 
   markdown: 
     wrap: 72
 ---
 
 ```{r}
-load("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/Italie/Spatial statistics/Stat_spatiale/data/RainData.RData")
+   load("../data/RainData.RData")
 
 library(ggplot2)
 library(gstat)
