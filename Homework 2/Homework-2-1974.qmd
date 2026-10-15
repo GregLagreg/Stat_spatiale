@@ -1,0 +1,354 @@
+---
+title: "Homework 2"
+format: html
+---
+
+# Anno 1974
+
+For having only the results of the homework on this notebook, we use a R file where we put all the functions needed for this work and then we can use them thanks to the source function. The content of this R file and the AI prompts used to generate functions will be analyzed at this end of this notebook.
+
+```{r}
+
+source("Useful_functions.R")
+
+```
+
+In a first time, we create a new dataset with only the observations made in 1974 thanks to the filter_target function.
+
+```{r}
+data_1974 <- filter_target(data = dati, 
+                           variable = "anno", 
+                           target = 1974)
+```
+
+## Question 1
+
+1\) Run an exploratory data analysis and comment on the results. In particular, analyze the relationship between the dependent variable (for example, total amount of rainfall, biomass, metal concentration) and the environmental descriptors.
+
+First of all, we analyse quickly the diverse variables available in the data and we create a map with the localisation of the diverse observations.
+
+```{r}
+
+board <- summary_statistics(data_1974)
+
+knitr::kable(board, digits = 2)
+```
+
+```{r}
+
+map_observations(
+  data = data_1974, 
+  var_lon = "Lon10", 
+  var_lat = "Lat10"
+)
+```
+
+Then,we analyze the relationship between the dependent variable (totanno) and the environmental descriptors.
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Quota",      
+  titre = "Rainfull vs Elevation"
+  
+)
+```
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Lon10",      
+  titre = "Rainfull vs Longitude"
+  
+)
+```
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Lat10",      
+  titre = "Rainfull vs Latitude"
+  
+)
+```
+
+So, there is a positive correlation between the elevation and the quantity and the annual rainfall. On the contrary, there is a negative correlation between the annual rainfall and the longitude/latitude.
+
+Finally, we analyze spatial dependence using a variogram. We use the variables XUTM and YUTM to calculate the distance between the points where the observations in the dataset were taken.
+
+```{r}
+
+
+variogramm(
+  data = data_1974,
+  var_x = "XUTM",
+  var_y = "YUTM",
+  var_output = "totanno", 
+  code_epsg = 32632
+)
+```
+
+The semi-variance increases very quickly before reaching a cap as expected.
+
+## Question 2
+
+2\) Using cross-validation, choose the optimal value for p in the IDW estimator.
+
+```{r}
+
+results_opti <- optimise_p_idw(data = data_1974, 
+                                  var_x = "XUTM", 
+                                  var_y = "YUTM", 
+                                  var_output = "totanno",
+                                  code_epsg = 32632)
+```
+
+## Question 3
+
+3)  Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid.
+
+We upload the map of Italy for the grid
+
+```{r}
+install.packages(c("rnaturalearth", "rnaturalearthdata"))
+```
+
+```{r}
+library(rnaturalearth)
+
+borders_italie <- ne_countries(scale = "medium", country = "Italy", returnclass = "sf")
+```
+
+```{r}
+
+grid_idw(
+  data = data_1974, 
+  var_x = "XUTM", 
+  var_y = "YUTM", 
+  var_output = "totanno",
+  code_epsg = 32632, 
+  param_p = 3.5,
+  map = borders_italie
+)
+```
+
+## Question 4
+
+4)  provide the AI prompt in weak and good form
+
+AI used : Gemini Pro
+
+Prompt : OK, now I'd like a function that takes as arguments a dataset, a first variable, then a second variable from that dataset, and a title, and that returns a graph with the values of the first variable on the y-axis and those of the second variable on the x-axis.
+
+```{r}
+
+double_graphic <- function(dataset, var_y, var_x, titre) {
+  
+  ggplot(data = dataset, aes(x = .data[[var_x]], y = .data[[var_y]])) +
+
+    geom_point(color = "#2c3e50", size = 2, alpha = 0.6) +
+    geom_smooth(method = "lm", color = "#e74c3c", se = TRUE) +
+    
+    labs(
+      title = titre,
+      x = var_x,
+      y = var_y
+    ) +
+    
+
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14)
+    )
+}
+```
+
+Comment : With the first prompt, the function allowed just to see the coordinates of the diverse points and did not show the correlation between the two variables. So I add the line "geom_smooth(method = "lm", color = "#e74c3c", se = TRUE) +" to show the correlation thanks to the folllowing prompt : Okay, I'd like you to add a trend line to this graph showing the correlation between the two variables used as arguments.
+
+Prompt : I want a function that takes a dataset, a first variable, and then a second variable as arguments. The first variable represents the longitude of the observation, and the second variable represents the latitude of the observation. Based on these variables, the function should return a map showing the locations of the various observations in the dataset provided as an argument.
+
+```{r}
+
+map_observations <- function(dataset, var_lon, var_lat) {
+
+  leaflet(data = dataset) |>
+    # addTiles() adds the map (OpenStreetMap)
+    addTiles() |>
+    # addCircleMarkers adds a point for each observation
+    addCircleMarkers(
+      lng = dataset[[var_lon]],   
+      lat = dataset[[var_lat]],   
+      radius = 5,                 # size of points
+      color = "#FF5733",          # Color
+      stroke = FALSE,             # no border
+      fillOpacity = 0.7,          # Opacity
+      # bonus : interactive map
+      popup = paste("Lon:", dataset[[var_lon]], "<br>Lat:", dataset[[var_lat]])
+    )
+}
+```
+
+Comment : This prompt allowed me to have directly the result expected.
+
+Prompt : I'm working in spatial statistics and I have to analyse a dataset. Create a function that takes as arguments a dataset, a first variable, a second variable, and a third variable. The first variable holds the XUTM values, the second the YUTM values, and the third the output I'm working on. I want the program to calculate the distance between the different points in order to create a variogram that shows how the correlation of the output changes as the distance changes.
+
+```{r}
+variogramm <- function(dataset, var_x, var_y, var_output, code_epsg) {
+  
+  # 1. Spatial transformation (in meters using UTM)
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Dynamic formula creation (e.g., "My_Output ~ 1")
+  # "~ 1" means we are studying the raw variable, without external trend
+  formule <- as.formula(paste(var_output, "~ 1"))
+  
+  # 3. Calculation of the experimental variogram
+  # gstat automatically calculates distances and groups points into bins
+  vario_exp <- variogram(formule, data = dataset_sf)
+  
+  # 4. Graph creation with ggplot2
+  ggplot(vario_exp, aes(x = dist, y = gamma)) +
+    geom_point(color = "#2c3e50", size = 3) +
+    geom_line(color = "#3498db", linetype = "dashed", alpha = 0.6) +
+    labs(
+      title = "Variogramm",
+      subtitle = paste("Evolution of the spatial variance for :", var_output),
+      x = "Distance",
+      y = "Semi-variance (Gamma)"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+```
+
+Comment : This prompt allowed me to have directly the result expected.
+
+Prompt : I want a function that finds the optimal parameter p for the weighted inverse distance estimator and that takes as arguments the dataset and two variables—the first representing the XUTM coordinate and the second representing the YUTM coordinate.
+
+```{r}
+optimise_p_idw <- function(dataset, var_x, var_y, var_output, code_epsg) {
+  
+  # 1. Spatial conversion with dynamic variables
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Dynamic formula creation 
+  formule <- as.formula(paste(var_output, "~ 1"))
+  
+  # 3. Parameter initialization
+  p_values <- seq(0.5, 10.0, by = 0.25)
+
+  rmse_results <- numeric(length(p_values))
+  
+  # 4. Outer loop: Testing different power parameters
+  for (i in seq_along(p_values)) {
+    current_p <- p_values[i]
+    squared_errors <- numeric(nrow(dataset_sf))
+    
+    # 5. Inner loop: Leave-One-Out Cross-Validation (LOOCV)
+    for (j in 1:nrow(dataset_sf)) {
+      train_data <- dataset_sf[-j, ]
+      test_data  <- dataset_sf[j, ]
+      
+      idw_fit <- idw(
+        formula = formule,
+        locations = train_data,
+        newdata = test_data,
+        idp = current_p,
+        debug.level = 0
+      )
+      
+      # 6. Value extraction and error calculation
+      predicted_val <- idw_fit$var1.pred
+      
+      # Using double brackets [[ ]] to extract 
+      # the value of the test column via its text name
+      actual_val <- test_data[[var_output]]
+      
+      squared_errors[j] <- (predicted_val - actual_val)^2
+    }
+    
+  
+    rmse_results[i] <- sqrt(mean(squared_errors))
+  }
+  
+  # 7. Identification of the optimal value
+
+  results_df <- data.frame(Power = p_values, RMSE = rmse_results)
+  optimal_p <- results_df$Power[which.min(results_df$RMSE)]
+  
+  cat("\n The optimal parameter p", var_output, "is :", optimal_p, "\n")
+  
+  # 8. Display diagnostic plot
+  plot(results_df$Power, results_df$RMSE, type = "b", pch = 19, col = "blue",
+       xlab = "Parameter p", 
+       ylab = "RMSE",
+       main = paste("Optimisation IDW :", var_output))
+  abline(v = optimal_p, col = "red", lty = 2, lwd = 2)
+  
+}
+```
+
+Comment : The first function generated by the AI used the MSE to choose the best parameter p. To comply with the course, I replace the MSE by the RMSE even if it does not change the final result.
+
+Prompt : I want you to create a function for me that takes a dataset, an output variable, and a parameter as arguments, and returns a map with the predicted output values calculated using IDW based on the parameter provided as an argument.
+
+```{r}
+grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map) {
+  
+  # 1. Spatial conversion of your data
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Creation of the raw grid (the large bounding box)
+  grille_vierge <- st_make_grid(dataset_sf, n = c(100, 100), what = "centers")
+  grille_sf <- st_sf(geometry = grille_vierge)
+  
+  # 3. THE SCISSOR CUT (Clipping)
+  # First ensure the mask has the same EPSG code as your data
+  map <- st_transform(map, crs = code_epsg)
+  
+  # Keep only the grid points that fall "inside" the mask
+  grille_clippee <- st_intersection(grille_sf, map)
+  
+  # 4. IDW Calculation (Only on solid ground!)
+  formule <- as.formula(paste(var_output, "~ 1"))
+  idw_resultat <- idw(
+    formula = formule,
+    locations = dataset_sf,
+    newdata = grille_clippee, # Using the clipped grid
+    idp = param_p,
+    debug.level = 0
+  )
+  
+  # 5. Map creation with borders in the background
+  ggplot() +
+    # Background layer: The border polygon (drawn in light gray)
+    geom_sf(data = map, fill = "gray95", color = "black") +
+    
+    # Interpolation layer: The predicted points
+    geom_sf(data = idw_resultat, aes(color = var1.pred), size = 3, shape = 15) +
+    
+    # Data layer: Your actual observations
+    geom_sf(data = dataset_sf, color = "black", shape = 21, fill = "white", size = 1.5) +
+    
+    scale_color_viridis_c(name = paste(var_output), "Prediction\n") +
+    labs(
+      title = "Interpolation IDW",
+      subtitle = "",
+      x = "Longitude (UTM)",
+      y = "Latitude (UTM)"
+    ) +
+    theme_minimal()
+}
+```
+
+Comment : The first prompt returned a map of the whole of Italy, which made it impossible to analyse the prediction, as it focused on only part of that territory. That is why the following prompt was needed to achieve this function: “I’d like you to modify the previous code so that the map returned focuses solely on the area where predictions could be made”.
+
+# Conclusion
+
+For the future, using prompts with more information is needed. Indeed, in absence of enough information, the functions generated do not allow to have the results expected because there are too many shaded areas to produce the correct result.
