@@ -17,14 +17,27 @@ library(sf)
 # ANNO 1973
 
 ## Weak prompt
-I work on a spatial data on rainfall and have measures from several stations in Italy. In my database "dati" there is a variable for the total amount of rain in the year named "totanno", elevation in the variable Quota,  coords in the variables Lat10 and Lon10 and distance in metre in XUTM and YUTM. Code in R and follow these instructions : 
- 1) Run an exploratory data analysis and comment on the results. In particular, analyze the relationship between the amount of rain and the elevation and between the amount of rain and the localisation. 
- 
-2) Using cross-validation, choose the optimal value for p in the IDW estimator . 
- 
-3) Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid (which is stored in grid$XUTM and grid$YUTM).
 
-1. Exploratory analysis
+I work on a spatial data on rainfall and have measures from several
+stations in Italy. In my database "dati" there is a variable for the
+total amount of rain in the year named "totanno", elevation in the
+variable Quota, coords in the variables Lat10 and Lon10 and distance in
+metre in XUTM and YUTM. Code in R and follow these instructions :  1)
+Run an exploratory data analysis and comment on the results. In
+particular, analyze the relationship between the amount of rain and the
+elevation and between the amount of rain and the localisation.
+
+2)  Using cross-validation, choose the optimal value for p in the IDW
+    estimator .
+
+3)  Using the IDW estimator and the optimal p, map the variable of
+    interest on the grid given prediction grid (which is stored in
+    grid$XUTM and grid$YUTM).
+
+<!-- -->
+
+1.  Exploratory analysis
+
 ```{r}
 dati <- dati |>
   dplyr::filter(anno == 1973)
@@ -102,7 +115,8 @@ ggplot(dati, aes(XUTM, YUTM, colour = res_loc)) +
 
 ```
 
-2. Choice of p
+2.  Choice of p
+
 ```{r}
 # IDW prediction at a single point (x0, y0)
 idw_point <- function(x0, y0, x, y, z, p) {
@@ -149,7 +163,9 @@ plot(z, idw_loocv(p_opt), pch = 19, col = rgb(0, 0, 1, 0.5),
 abline(0, 1, col = "red", lwd = 2)
 
 ```
-3. Interpolation by IDW
+
+3.  Interpolation by IDW
+
 ```{r}
 pts     <- st_as_sf(dati, coords = c("XUTM", "YUTM"), crs = 32632)
 grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
@@ -172,22 +188,37 @@ ggplot() +
   ggtitle(paste("IDW prediction of annual rainfall (p =", p_opt, ")"))
 
 ```
+
 ## Good prompt
-I work on a spatial data on rainfall and have measures from several stations in Italy, I will only study the year 1973. Code in R in cells that can be added in a quarto document.
-Follow these instructions :
-1. Run an exploratory data analysis on the rainfall itself. Analyze the relationship between the amount of rain and the elevation. Do basic bivariate analysis (scatter plot with a line corresponding to the linear model, measure of correlation and hypothesis test). Also do a map of the rainfall and a semi-variogram.
-2. Using cross-validation, choose the optimal value for p in the IDW estimator, with respect to the MSE .
-3. Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid (which is stored in gridXUTM and gridYUTM).
 
-Preferences:
-* Use XUTM/YUTM for both stations and grid, in EPSG:32632, with no reprojection.
-* For each conclusion done let me a way to assess the result
+I work on a spatial data on rainfall and have measures from several
+stations in Italy, I will only study the year 1973. Code in R in cells
+that can be added in a quarto document. Follow these instructions : 1.
+Run an exploratory data analysis on the rainfall itself. Analyze the
+relationship between the amount of rain and the elevation. Do basic
+bivariate analysis (scatter plot with a line corresponding to the linear
+model, measure of correlation and hypothesis test). Also do a map of the
+rainfall and a semi-variogram. 2. Using cross-validation, choose the
+optimal value for p in the IDW estimator, with respect to the MSE . 3.
+Using the IDW estimator and the optimal p, map the variable of interest
+on the grid given prediction grid (which is stored in gridXUTM and
+gridYUTM).
 
-Data
-* dati is a data.frame with columns totanno (annual rainfall, mm), Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM (metres, EPSG:32632), and anno (year). It originally has 2373 rows (about 190 stations over several years). I have already filtered it to a single year, so it now has one row per station and no duplicated coordinates.
-* grid is a data.frame with columns XUTM and YUTM. It has 1005 rows and is not a regular grid: every point has unique X and Y values, with irregular spacing. Please plot it as points, not with geom_tile/geom_raster.
+Preferences: \* Use XUTM/YUTM for both stations and grid, in EPSG:32632,
+with no reprojection. \* For each conclusion done let me a way to assess
+the result
 
-1. Exploratory data analysis
+Data \* dati is a data.frame with columns totanno (annual rainfall, mm),
+Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM (metres,
+EPSG:32632), and anno (year). It originally has 2373 rows (about 190
+stations over several years). I have already filtered it to a single
+year, so it now has one row per station and no duplicated coordinates.
+\* grid is a data.frame with columns XUTM and YUTM. It has 1005 rows and
+is not a regular grid: every point has unique X and Y values, with
+irregular spacing. Please plot it as points, not with
+geom_tile/geom_raster.
+
+1.  Exploratory data analysis
 
 1.1 Distribution of annual rainfall
 
@@ -210,7 +241,12 @@ par(op)
 shapiro.test(dati$totanno)
 ```
 
-**How to assess:** skewness near 0 and points along the Q-Q line suggest approximate normality; a clearly positive skewness, a right tail in the histogram or points leaving the line at the top indicate a skewed distribution. The Shapiro-Wilk p-value below 0.05 rejects normality. Points beyond the boxplot whiskers are candidate outliers: check whether they are real (very wet mountain stations) or data errors.
+**How to assess:** skewness near 0 and points along the Q-Q line suggest
+approximate normality; a clearly positive skewness, a right tail in the
+histogram or points leaving the line at the top indicate a skewed
+distribution. The Shapiro-Wilk p-value below 0.05 rejects normality.
+Points beyond the boxplot whiskers are candidate outliers: check whether
+they are real (very wet mountain stations) or data errors.
 
 1.2 Rainfall vs elevation
 
@@ -250,10 +286,19 @@ plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
 
 **How to assess:**
 
-- *Association:* Pearson tests the linear relationship, Spearman the monotone one. A small p-value (below 0.05) rejects "no association"; the sign gives the direction. If Pearson and Spearman differ a lot, the relationship is non-linear or driven by outliers.
-- *Strength:* $R^2$ in `summary(fit_lm)` is the share of rainfall variance explained by elevation alone (and equals the Pearson correlation squared). The slope is in mm of rain per metre of elevation; use `confint` to see whether 0 is excluded.
-- *Model validity:* in the diagnostic plots, residuals vs fitted should show no curve or funnel, and the Q-Q plot no strong departures.
-- *Caveat:* the p-values assume independent observations. If the residual semivariogram is not flat (it rises with distance), the stations are spatially correlated and the p-values are optimistic.
+- *Association:* Pearson tests the linear relationship, Spearman the
+  monotone one. A small p-value (below 0.05) rejects "no association";
+  the sign gives the direction. If Pearson and Spearman differ a lot,
+  the relationship is non-linear or driven by outliers.
+- *Strength:* $R^2$ in `summary(fit_lm)` is the share of rainfall
+  variance explained by elevation alone (and equals the Pearson
+  correlation squared). The slope is in mm of rain per metre of
+  elevation; use `confint` to see whether 0 is excluded.
+- *Model validity:* in the diagnostic plots, residuals vs fitted should
+  show no curve or funnel, and the Q-Q plot no strong departures.
+- *Caveat:* the p-values assume independent observations. If the
+  residual semivariogram is not flat (it rises with distance), the
+  stations are spatially correlated and the p-values are optimistic.
 
 1.3 Map of the rainfall
 
@@ -267,7 +312,10 @@ ggplot(dati, aes(XUTM, YUTM, colour = totanno)) +
   labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1973")
 ```
 
-**How to assess:** look for large-scale patterns (gradients, clusters of similar colours) and compare them with elevation. Neighbouring stations with similar colours support spatial dependence; also note where stations are sparse, since predictions there will be less reliable.
+**How to assess:** look for large-scale patterns (gradients, clusters of
+similar colours) and compare them with elevation. Neighbouring stations
+with similar colours support spatial dependence; also note where
+stations are sparse, since predictions there will be less reliable.
 
 1.4 Empirical semivariogram
 
@@ -321,17 +369,29 @@ ggplot(env, aes(dist / 1000)) +
 
 **How to assess:**
 
-- *Is there spatial correlation at all?* Empirical points that fall below the grey envelope at short distances mean that close stations are more similar than random (spatial dependence). If the points stay inside the envelope, there is little evidence of structure.
-- *Reading the shape:* nugget (value at distance 0) = measurement error plus variation at scales smaller than the station spacing; sill = total variance where the curve flattens; range = distance beyond which stations are essentially uncorrelated. Compare the fitted sill with `var(dati$totanno)`: they should be of the same order, unless there is a trend (a semivariogram that keeps growing without flattening suggests a trend, e.g. with elevation).
-- *Fit quality:* lower `SSErr` means a better fit among the three candidates, but always check visually that the curve follows the points, mainly the first lags (those with a large `np`).
+- *Is there spatial correlation at all?* Empirical points that fall
+  below the grey envelope at short distances mean that close stations
+  are more similar than random (spatial dependence). If the points stay
+  inside the envelope, there is little evidence of structure.
+- *Reading the shape:* nugget (value at distance 0) = measurement error
+  plus variation at scales smaller than the station spacing; sill =
+  total variance where the curve flattens; range = distance beyond which
+  stations are essentially uncorrelated. Compare the fitted sill with
+  `var(dati$totanno)`: they should be of the same order, unless there is
+  a trend (a semivariogram that keeps growing without flattening
+  suggests a trend, e.g. with elevation).
+- *Fit quality:* lower `SSErr` means a better fit among the three
+  candidates, but always check visually that the curve follows the
+  points, mainly the first lags (those with a large `np`).
 
-2. Choice of p in IDW by leave-one-out cross-validation
+2.  Choice of p in IDW by leave-one-out cross-validation
 
 The IDW estimator at point $s_0$ is
 
 $$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
 
-For each station $i$ I remove it, predict it from the other $n-1$, and compute $\mathrm{MSE}(p)=\frac1n\sum_i(z_i-\hat z_{-i})^2$.
+For each station $i$ I remove it, predict it from the other $n-1$, and
+compute $\mathrm{MSE}(p)=\frac1n\sum_i(z_i-\hat z_{-i})^2$.
 
 ```{r}
 #| label: idw-cv-1973-good
@@ -387,12 +447,22 @@ cat("Correlation obs vs LOO prediction:", round(cor(z, cv_pred), 3), "\n")
 
 **How to assess:**
 
-- *Is the optimum a real minimum?* The red line should sit in the interior of the MSE curve, with MSE rising on both sides. If the minimum falls at the edge of the tested range (0.25 or 8), extend `p_grid`.
-- *Is it well determined?* A very flat curve around the minimum means that nearby values of p are practically equivalent, so the choice is not critical.
-- *Does IDW beat a trivial predictor?* The relative skill should be clearly positive (1 = perfect, 0 = no better than the mean). Points close to the red 1:1 line confirm good predictions; systematic departures at high or low values (IDW smooths extremes) show its bias.
-- *Caveat:* the minimum CV MSE is slightly optimistic because the same data both choose p and evaluate it. For a stricter check, repeat with k-fold CV or hold out some stations.
+- *Is the optimum a real minimum?* The red line should sit in the
+  interior of the MSE curve, with MSE rising on both sides. If the
+  minimum falls at the edge of the tested range (0.25 or 8), extend
+  `p_grid`.
+- *Is it well determined?* A very flat curve around the minimum means
+  that nearby values of p are practically equivalent, so the choice is
+  not critical.
+- *Does IDW beat a trivial predictor?* The relative skill should be
+  clearly positive (1 = perfect, 0 = no better than the mean). Points
+  close to the red 1:1 line confirm good predictions; systematic
+  departures at high or low values (IDW smooths extremes) show its bias.
+- *Caveat:* the minimum CV MSE is slightly optimistic because the same
+  data both choose p and evaluate it. For a stricter check, repeat with
+  k-fold CV or hold out some stations.
 
-3. IDW map on the prediction grid
+3.  IDW map on the prediction grid
 
 ```{r}
 #| label: idw-grid
@@ -443,17 +513,33 @@ cat("Typical station spacing (median nearest-neighbour distance, km):",
 
 **How to assess:**
 
-- *Basic consistency:* no `NA`, and the predicted range must fall inside the observed range (IDW with positive weights can never exceed it; if it does, there is a bug). Because of this, IDW cannot predict peaks above the highest station, nor the valleys below the lowest, and the map looks smoother than reality.
-- *Match with the data:* where the circles (observations) and the small points (predictions) have the same colour, the map reproduces the data. Visible "bull's-eyes" around isolated stations are typical of IDW with large p.
-- *Reliability:* grid points whose distance to the nearest station is much larger than the typical station spacing (last two outputs) are extrapolations; read the map there with caution.
-- *No uncertainty measure:* IDW does not give prediction variances. If you need them, kriging with the semivariogram fitted in Section 1.4 is the natural next step.
-
-
+- *Basic consistency:* no `NA`, and the predicted range must fall inside
+  the observed range (IDW with positive weights can never exceed it; if
+  it does, there is a bug). Because of this, IDW cannot predict peaks
+  above the highest station, nor the valleys below the lowest, and the
+  map looks smoother than reality.
+- *Match with the data:* where the circles (observations) and the small
+  points (predictions) have the same colour, the map reproduces the
+  data. Visible "bull's-eyes" around isolated stations are typical of
+  IDW with large p.
+- *Reliability:* grid points whose distance to the nearest station is
+  much larger than the typical station spacing (last two outputs) are
+  extrapolations; read the map there with caution.
+- *No uncertainty measure:* IDW does not give prediction variances. If
+  you need them, kriging with the semivariogram fitted in Section 1.4 is
+  the natural next step.
 
 ## Comparison of the results
-With the first prompt, Claude Sonnet fitted a linear regression of the amount of rainfall on the the elevation, the latitude and the longitude, which doesn't make much sense. The effects observed in plots of rainfall with respect to latitude and longitude are interesting but can be better seen on the map. On top of that it didn't provide code for a semi-variogram which is essential for analyzing spatial dependence on continuous data. Although it did make a good map and plotted rainfall against elevation.
-With the second prompt Claude is giving indication on how to interpret the results, which is good.
 
-Other than that, the choice of p by cross-validation and the interpolation map are already quite good with the first prompt. 
+With the first prompt, Claude Sonnet fitted a linear regression of the
+amount of rainfall on the the elevation, the latitude and the longitude,
+which doesn't make much sense. The effects observed in plots of rainfall
+with respect to latitude and longitude are interesting but can be better
+seen on the map. On top of that it didn't provide code for a
+semi-variogram which is essential for analyzing spatial dependence on
+continuous data. Although it did make a good map and plotted rainfall
+against elevation. With the second prompt Claude is giving indication on
+how to interpret the results, which is good.
 
-
+Other than that, the choice of p by cross-validation and the
+interpolation map are already quite good with the first prompt.

@@ -35,7 +35,25 @@ filter_target <- function(dataset, variable, target) {
 }
 
 
+double_graphic <- function(dataset, var_y, var_x, titre) {
+  
+  ggplot(data = dataset, aes(x = .data[[var_x]], y = .data[[var_y]])) +
 
+    geom_point(color = "#2c3e50", size = 2, alpha = 0.6) +
+    geom_smooth(method = "lm", color = "#e74c3c", se = TRUE) +
+    
+    labs(
+      title = titre,
+      x = var_x,
+      y = var_y
+    ) +
+    
+
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14)
+    )
+}
 
 map_observations <- function(dataset, var_lon, var_lat) {
 
@@ -102,7 +120,8 @@ optimise_p_idw <- function(dataset, var_x, var_y, var_output, code_epsg) {
   
   # 3. Parameter initialization
   p_values <- seq(0.5, 10.0, by = 0.25)
-  mse_results <- numeric(length(p_values))
+  # MODIFICATION : Changement du nom pour RMSE
+  rmse_results <- numeric(length(p_values))
   
   # 4. Outer loop: Testing different power parameters
   for (i in seq_along(p_values)) {
@@ -132,19 +151,21 @@ optimise_p_idw <- function(dataset, var_x, var_y, var_output, code_epsg) {
       squared_errors[j] <- (predicted_val - actual_val)^2
     }
     
-    mse_results[i] <- mean(squared_errors)
+    # MODIFICATION : Ajout de sqrt() pour calculer la Racine (Root)
+    rmse_results[i] <- sqrt(mean(squared_errors))
   }
   
   # 7. Identification of the optimal value
-  results_df <- data.frame(Power = p_values, MSE = mse_results)
-  optimal_p <- results_df$Power[which.min(results_df$MSE)]
+  # On cherche bien la plus petite erreur (which.min)
+  results_df <- data.frame(Power = p_values, RMSE = rmse_results)
+  optimal_p <- results_df$Power[which.min(results_df$RMSE)]
   
   cat("\n The optimal parameter p", var_output, "is :", optimal_p, "\n")
   
-  # 8. Display diagnostic plot
-  plot(results_df$Power, results_df$MSE, type = "b", pch = 19, col = "blue",
+  # 8. Display diagnostic plot (Noms des axes mis à jour)
+  plot(results_df$Power, results_df$RMSE, type = "b", pch = 19, col = "blue",
        xlab = "Parameter p", 
-       ylab = "MSE",
+       ylab = "RMSE",
        main = paste("Optimisation IDW :", var_output))
   abline(v = optimal_p, col = "red", lty = 2, lwd = 2)
   
@@ -179,6 +200,8 @@ grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map)
     debug.level = 0
   )
   
+   bbox <- st_bbox(idw_resultat)
+  
   # 5. Map creation with borders in the background
   ggplot() +
     # Background layer: The border polygon (drawn in light gray)
@@ -190,6 +213,12 @@ grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map)
     # Data layer: Your actual observations
     geom_sf(data = dataset_sf, color = "black", shape = 21, fill = "white", size = 1.5) +
     
+    coord_sf(
+      xlim = c(bbox["xmin"], bbox["xmax"]),
+      ylim = c(bbox["ymin"], bbox["ymax"]),
+      expand = TRUE # TRUE ajoute une légère marge aérée autour des points
+    ) +
+    
     scale_color_viridis_c(name = paste(var_output), "Prediction\n") +
     labs(
       title = "Interpolation IDW",
@@ -199,5 +228,7 @@ grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map)
     ) +
     theme_minimal()
 }
+
+
 
 
