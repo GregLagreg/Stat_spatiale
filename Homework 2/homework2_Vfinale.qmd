@@ -107,3 +107,42 @@ ggplot(cvs, aes(pred, obs)) +
 **Comment on Figure 2.** The points are spread around the red line, with a correlation between observation and prediction of `r round(get("cor")[1], 2)` in 1973, `r round(get("cor")[2], 2)` in 1974 and `r round(get("cor")[3], 2)` in 1980. The wettest stations (top 10 % of the observed values) are under-predicted, by `r round(-get("bias_hi")[1])`, `r round(-get("bias_hi")[2])` and `r round(-get("bias_hi")[3])` mm on average, and the driest ones (bottom 10 %) are over-predicted, by `r round(get("bias_lo")[1])`, `r round(get("bias_lo")[2])` and `r round(get("bias_lo")[3])` mm.
 
 The optimal values of $p$ are used in the next question to map the rainfall on the prediction grid.
+
+# Question 3: interpolation and map
+load("../data/RainData.RData")
+
+```{r}
+dati73 <- dati |> 
+  dplyr::filter(dati$anno == 1973)
+
+data_1974  <- dati |> 
+  dplyr::filter(dati$anno == 1974)
+
+d80 <- subset(dati, anno == 1980)
+
+library(ggplot2)
+
+```
+
+# Final 
+```{r}
+interpolation_map <- function(data, p_opt, grid, year) {
+  fct_grid <- grid
+  fct_grid$pred <- idw(totanno ~ 1, locations = ~ XUTM + YUTM, data = data,
+                       newdata = grid, idp = p_opt, debug.level = 0)$var1.pred
+
+  ggplot() +
+    geom_point(data = fct_grid, aes(XUTM / 1000, YUTM / 1000, colour = pred), size = 1.5) +
+    geom_point(data = data, aes(XUTM / 1000, YUTM / 1000), shape = 4, size = 1) +
+    scale_colour_viridis_c(option = "C", name = "mm") +
+    coord_equal() +
+    labs(x = "X (km)", y = "Y (km)",
+         title = paste0("IDW prediction, ", year, " (p = ", round(p_opt, 2), ")"),
+         subtitle = "Crosses: stations")
+}
+
+interpolation_map(dati73, 3.125, grid, 1973)
+interpolation_map(data_1974, 3.45 , grid, 1973)
+interpolation_map(d80, 2.62, grid, 1973)
+
+```
