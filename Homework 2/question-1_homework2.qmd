@@ -1,0 +1,261 @@
+---
+title: "Question 1 commun"
+format: html
+editor: visual
+---
+
+```{r}
+load("../data/RainData.RData")
+
+library(ggplot2)
+library(gstat)
+library(sf)
+```
+
+## Question 1
+
+**1.1 Distribution of annual rainfall**
+
+```{r}
+#| label: eda-rain
+#| fig-height: 4
+#| 
+annees <- c(1973, 1974, 1980)
+
+op <- par(mfrow = c(3, 2), mar = c(4, 4, 2, 1))
+
+for (an in annees) {
+  dati_an <- dati |> 
+    dplyr::filter(anno == an)
+  
+  cat("\n=== Année :", an, "===\n")
+  print(summary(dati_an$totanno))
+  cat("SD:", sd(dati_an$totanno, na.rm = TRUE), 
+      "| CV:", sd(dati_an$totanno, na.rm = TRUE) / mean(dati_an$totanno, na.rm = TRUE), "\n")
+  
+  hist(dati_an$totanno, 
+       breaks = 20, 
+       col = "grey80", 
+       main = paste("Histogram -", an), 
+       xlab = "Annual rainfall (mm)")
+  
+  boxplot(dati_an$totanno, 
+          main = paste("Boxplot -", an), 
+          ylab = "mm")
+}
+
+par(op)
+
+```
+
+**1.2 Rainfall vs elevation**
+
+```{r}
+#| label: eda-rain
+#| fig-height: 4
+
+# 1973
+ggplot(dati73, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)",
+       title = "Rainfall vs elevation, 1973")
+
+# correlation measures and tests
+ct_p <- cor.test(dati73$Quota, dati73$totanno, method = "pearson")
+ct_p
+
+# simple linear model
+fit_lm <- lm(totanno ~ Quota, data = dati73)
+summary(fit_lm)
+confint(fit_lm)
+
+# 1974
+
+ggplot(data_1974, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)",
+       title = "Rainfall vs elevation, 1974")
+
+# correlation measures and tests
+ct_p <- cor.test(data_1974$Quota, data_1974$totanno, method = "pearson")
+ct_p
+
+# simple linear model
+fit_lm <- lm(totanno ~ Quota, data = data_1974)
+summary(fit_lm)
+confint(fit_lm)
+
+# 1980
+
+ggplot(data_1980, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)",
+       title = "Rainfall vs elevation, 1980")
+
+# correlation measures and tests
+ct_p <- cor.test(data_1980$Quota, data_1980$totanno, method = "pearson")
+ct_p
+
+# simple linear model
+fit_lm <- lm(totanno ~ Quota, data = data_1980)
+summary(fit_lm)
+confint(fit_lm)
+```
+
+```{r}
+#| label: lm-diagnostics
+#| fig-height: 5
+
+# 1973
+
+fit_lm <- lm(totanno ~ Quota, data = dati73)
+
+shapiro.test(residuals(fit_lm))
+
+# is there leftover spatial structure in the residuals?
+dati73$res_lm <- residuals(fit_lm)
+vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = dati73)
+plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+
+
+# 1974
+
+fit_lm <- lm(totanno ~ Quota, data = data_1974)
+
+shapiro.test(residuals(fit_lm))
+
+# is there leftover spatial structure in the residuals?
+data_1974$res_lm <- residuals(fit_lm)
+vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = data_1974)
+plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+
+
+# 1980
+
+fit_lm <- lm(totanno ~ Quota, data = data_1980)
+
+shapiro.test(residuals(fit_lm))
+
+# is there leftover spatial structure in the residuals?
+data_1980$res_lm <- residuals(fit_lm)
+vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = data_1980)
+plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+```
+
+**1.3 Map of the rainfall**
+
+```{r}
+
+# 1973
+
+ggplot(dati73, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1973")
+
+# 1974
+
+ggplot(data_1974, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1974")
+
+# 1980
+
+ggplot(data_1980, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1980")
+
+```
+**1.4 Empirical semivariogram**
+
+```{r}
+#| label: variogram-envelope
+#| fig-height: 4.5
+
+# 1973
+
+v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = dati73)
+v 
+# Monte Carlo envelope under spatial independence: permute the values over the stations
+set.seed(1973)
+nsim <- 99
+sims <- replicate(nsim, {
+  tmp <- dati73
+  tmp$totanno <- sample(tmp$totanno)
+  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
+            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
+})
+env <- data.frame(dist = v$dist, gamma = v$gamma,
+                  lo = apply(sims, 1, min, na.rm = TRUE),
+                  hi = apply(sims, 1, max, na.rm = TRUE))
+
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance",
+       title = "Empirical semivariogram vs envelope under no spatial correlation; 1973")
+
+# 1974
+
+v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = data_1974)
+v 
+# Monte Carlo envelope under spatial independence: permute the values over the stations
+set.seed(1974)
+nsim <- 99
+sims <- replicate(nsim, {
+  tmp <- dati73
+  tmp$totanno <- sample(tmp$totanno)
+  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
+            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
+})
+env <- data.frame(dist = v$dist, gamma = v$gamma,
+                  lo = apply(sims, 1, min, na.rm = TRUE),
+                  hi = apply(sims, 1, max, na.rm = TRUE))
+
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance",
+       title = "Empirical semivariogram vs envelope under no spatial correlation; 1974")
+
+
+# 1980
+
+
+v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = data_1980)
+v 
+# Monte Carlo envelope under spatial independence: permute the values over the stations
+set.seed(1980)
+nsim <- 99
+sims <- replicate(nsim, {
+  tmp <- dati73
+  tmp$totanno <- sample(tmp$totanno)
+  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
+            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
+})
+env <- data.frame(dist = v$dist, gamma = v$gamma,
+                  lo = apply(sims, 1, min, na.rm = TRUE),
+                  hi = apply(sims, 1, max, na.rm = TRUE))
+
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance",
+       title = "Empirical semivariogram vs envelope under no spatial correlation; 1980")
+
+
+```
+
+
+
+
+
+
