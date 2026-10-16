@@ -110,23 +110,14 @@ ggplot(cvs, aes(pred, obs)) +
 The optimal values of $p$ are used in the next question to map the rainfall on the prediction grid.
 
 # Question 3: interpolation and map
-load("../data/RainData.RData")
-
+ 
 ```{r}
-dati73 <- dati |> 
-  dplyr::filter(dati$anno == 1973)
+#| label: q3-maps
+#| fig-width: 15
+#| fig-height: 6
+#| column: page
+library(patchwork)
 
-data_1974  <- dati |> 
-  dplyr::filter(dati$anno == 1974)
-
-d80 <- subset(dati, anno == 1980)
-
-library(ggplot2)
-
-```
-
-# Final 
-```{r}
 interpolation_map <- function(data, p_opt, grid, year) {
   fct_grid <- grid
   fct_grid$pred <- idw(totanno ~ 1, locations = ~ XUTM + YUTM, data = data,
@@ -138,12 +129,13 @@ interpolation_map <- function(data, p_opt, grid, year) {
     scale_colour_viridis_c(option = "C", name = "mm") +
     coord_equal() +
     labs(x = "X (km)", y = "Y (km)",
-         title = paste0("IDW prediction, ", year, " (p = ", round(p_opt, 2), ")"),
-         subtitle = "Crosses: stations")
+         title = paste0(year, " (p = ", round(p_opt, 2), ")")) +
+    theme(legend.position = "bottom")
 }
 
-interpolation_map(dati73, 3.125, grid, 1973)
-interpolation_map(data_1974, 3.45 , grid, 1973)
-interpolation_map(d80, 2.62, grid, 1973)
-
+interpolation_map(subset(dati, anno == 1973), 3.125, grid, 1973) +
+interpolation_map(subset(dati, anno == 1974), 3.45,  grid, 1974) +
+interpolation_map(subset(dati, anno == 1980), 2.62,  grid, 1980) +
+  plot_annotation(title = "IDW prediction of annual rainfall",
+                  subtitle = "Crosses: stations")
 ```
