@@ -12,6 +12,7 @@ execute:
 ```{r}
 #| label: setup
 library(ggplot2)
+library(gstat)
 load("../data/RainData.RData")   # data.frame `dati` (stations of all years) and `grid`
 ```
 
