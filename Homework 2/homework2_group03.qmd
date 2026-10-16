@@ -2,7 +2,11 @@
 title: "Homework 2"
 format: 
   html : 
+    toc: true
     embed-resources: true
+execute:
+  warning: false
+  message: false
 editor: 
   markdown: 
     wrap: 72
@@ -20,102 +24,6 @@ library(sf)
 
 ## Weak prompt
 
-<<<<<<< HEAD
-I work on a spatial data on rainfall and have measures from several
-stations in Italy. In my database "dati" there is a variable for the
-total amount of rain in the year named "totanno", elevation in the
-variable Quota, coords in the variables Lat10 and Lon10 and distance in
-metre in XUTM and YUTM. Code in R and follow these instructions :  1)
-Run an exploratory data analysis and comment on the results. In
-particular, analyze the relationship between the amount of rain and the
-elevation and between the amount of rain and the localisation.
-
-2)  Using cross-validation, choose the optimal value for p in the IDW
-    estimator .
-
-3)  Using the IDW estimator and the optimal p, map the variable of
-    interest on the grid given prediction grid (which is stored in
-    grid$XUTM and grid$YUTM).
-
-<!-- -->
-
-1.  Exploratory analysis
-
-```{r}
-dati <- dati |>
-  dplyr::filter(anno == 1973)
-str(dati)
-summary(dati[, c("totanno", "Quota", "Lat10", "Lon10", "XUTM", "YUTM")])
-colSums(is.na(dati[, c("totanno", "Quota", "Lat10", "Lon10", "XUTM", "YUTM")]))
- 
-# Duplicated station locations would break IDW (distance = 0)
-sum(duplicated(dati[, c("XUTM", "YUTM")]))
- 
-## 1a) Univariate distribution of rainfall and elevation
-par(mfrow = c(2, 3))
-hist(dati$totanno, breaks = 20, col = "lightblue", main = "Annual rainfall",
-     xlab = "totanno (mm)")
-boxplot(dati$totanno, main = "Annual rainfall", col = "lightblue")
-qqnorm(dati$totanno, main = "QQ-plot rainfall"); qqline(dati$totanno)
-hist(dati$Quota, breaks = 20, col = "lightgreen", main = "Elevation",
-     xlab = "Quota (m)")
-boxplot(dati$Quota, main = "Elevation", col = "lightgreen")
-qqnorm(dati$Quota, main = "QQ-plot elevation"); qqline(dati$Quota)
-par(mfrow = c(1, 1))
- 
-## 1b) Rainfall vs elevation
-plot(dati$Quota, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
-     xlab = "Elevation (m)", ylab = "Annual rainfall (mm)",
-     main = "Rainfall vs elevation")
-lines(lowess(dati$Quota, dati$totanno), col = "red", lwd = 2)
-abline(lm(totanno ~ Quota, data = dati), col = "darkgreen", lwd = 2, lty = 2)
-legend("topright", c("lowess", "linear fit"), col = c("red", "darkgreen"),
-       lwd = 2, lty = c(1, 2), bty = "n")
- 
-cor(dati$Quota, dati$totanno)                       # Pearson
-cor(dati$Quota, dati$totanno, method = "spearman")  # Spearman
-summary(lm(totanno ~ Quota, data = dati))
- 
-## 1c) Rainfall vs location
-par(mfrow = c(1, 2))
-plot(dati$Lon10, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
-     xlab = "Longitude", ylab = "Annual rainfall (mm)", main = "Rainfall vs longitude")
-lines(lowess(dati$Lon10, dati$totanno), col = "red", lwd = 2)
-plot(dati$Lat10, dati$totanno, pch = 19, col = rgb(0, 0, 1, 0.5),
-     xlab = "Latitude", ylab = "Annual rainfall (mm)", main = "Rainfall vs latitude")
-lines(lowess(dati$Lat10, dati$totanno), col = "red", lwd = 2)
-par(mfrow = c(1, 1))
- 
-cor(dati[, c("totanno", "Quota", "Lat10", "Lon10")])
- 
-# Linear trend surface, with and without elevation
-m_loc     <- lm(totanno ~ XUTM + YUTM, data = dati)
-m_loc_q   <- lm(totanno ~ XUTM + YUTM + Quota, data = dati)
-m_loc_q2  <- lm(totanno ~ poly(XUTM, YUTM, degree = 2) + Quota, data = dati)
-summary(m_loc); summary(m_loc_q)
-anova(m_loc, m_loc_q, m_loc_q2)
- 
-## 1d) Map of the stations: rainfall and elevation
-ggplot(dati, aes(XUTM, YUTM, colour = totanno)) +
-  geom_point(size = 2.5) +
-  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
-  coord_equal() + theme_minimal() +
-  ggtitle("Annual rainfall at the stations")
- 
-ggplot(dati, aes(XUTM, YUTM, colour = Quota)) +
-  geom_point(size = 2.5) +
-  scale_colour_viridis_c(option = "magma", name = "Elevation (m)") +
-  coord_equal() + theme_minimal() +
-  ggtitle("Elevation of the stations")
- 
-## 1e) Residuals of the location model: is there remaining spatial structure?
-dati$res_loc <- residuals(m_loc)
-ggplot(dati, aes(XUTM, YUTM, colour = res_loc)) +
-  geom_point(size = 2.5) +
-  scale_colour_gradient2(low = "red", mid = "white", high = "blue", name = "Residual") +
-  coord_equal() + theme_minimal() +
-  ggtitle("Residuals of lm(totanno ~ XUTM + YUTM)")
-=======
 I wrote a weak prompt by only giving the instructions and some context
 about the data. For explanatory analysis, Claude Sonnet fitted a linear
 regression of the amount of rainfall on the the elevation, the latitude
@@ -128,119 +36,10 @@ Other than that, the choice of p by cross-validation and the
 interpolation map are already quite good with the first prompt. With the
 second prompt Claude is giving indication on how to interpret the
 results, which is good.
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 Other than that, the choice of p by cross-validation and the
 interpolation map are already quite good with the first prompt.
 
-<<<<<<< HEAD
-2.  Choice of p
-
-```{r}
-# IDW prediction at a single point (x0, y0)
-idw_point <- function(x0, y0, x, y, z, p) {
-  d <- sqrt((x - x0)^2 + (y - y0)^2)
-  if (any(d == 0)) return(mean(z[d == 0]))
-  w <- 1 / d^p
-  sum(w * z) / sum(w)
-}
- 
-x <- dati$XUTM; y <- dati$YUTM; z <- dati$totanno
-n <- nrow(dati)
- 
-# Station-to-station distance matrix (computed once)
-D <- as.matrix(dist(cbind(x, y)))
-diag(D) <- Inf   # leave-one-out: a station never predicts itself
- 
-# Leave-one-out predictions for a given p
-idw_loocv <- function(p) {
-  W <- D^(-p)                 # diag becomes 0 since Inf^(-p) = 0
-  as.numeric(W %*% z / rowSums(W))
-}
- 
-p_grid <- seq(0.1, 6, by = 0.1)
-cv <- t(sapply(p_grid, function(p) {
-  e <- z - idw_loocv(p)
-  c(p = p, RMSE = sqrt(mean(e^2)), MAE = mean(abs(e)))
-}))
-cv <- as.data.frame(cv)
- 
-p_opt <- cv$p[which.min(cv$RMSE)]
-cat("Optimal p (min LOO-CV RMSE):", p_opt, "\n")
-cat("RMSE at p_opt:", min(cv$RMSE), "\n")
- 
-ggplot(cv, aes(p, RMSE)) +
-  geom_line() + geom_point(size = 1) +
-  geom_vline(xintercept = p_opt, colour = "red", linetype = 2) +
-  theme_minimal() +
-  ggtitle(paste("LOO cross-validation RMSE - optimal p =", p_opt))
- 
-# Observed vs predicted at the optimal p
-plot(z, idw_loocv(p_opt), pch = 19, col = rgb(0, 0, 1, 0.5),
-     xlab = "Observed", ylab = "LOO-CV prediction",
-     main = paste("IDW cross-validation, p =", p_opt))
-abline(0, 1, col = "red", lwd = 2)
-
-```
-
-3.  Interpolation by IDW
-
-```{r}
-pts     <- st_as_sf(dati, coords = c("XUTM", "YUTM"), crs = 32632)
-grid_sf <- st_as_sf(grid, coords = c("XUTM", "YUTM"), crs = 32632)
-
-idw_out <- idw(totanno ~ 1, locations = pts, newdata = grid_sf,
-               idp = p_opt, debug.level = 0)
-
-ggplot() +
-  geom_sf(data = idw_out, aes(colour = var1.pred), shape = 15, size = 1.5) +
-  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
-  theme_minimal() +
-  ggtitle(paste("IDW prediction of annual rainfall (p =", p_opt, ")"))
-
-ggplot() +
-  geom_sf(data = idw_out, aes(colour = var1.pred), shape = 15, size = 1.5) +
-  geom_sf(data = pts, shape = 21, size = 1, fill = "white",
-          colour = "black", alpha = 0.7) +
-  scale_colour_viridis_c(option = "turbo", name = "Rain (mm)") +
-  theme_minimal() +
-  ggtitle(paste("IDW prediction of annual rainfall (p =", p_opt, ")"))
-
-```
-
-## Good prompt
-
-I work on a spatial data on rainfall and have measures from several
-stations in Italy, I will only study the year 1973. Code in R in cells
-that can be added in a quarto document. Follow these instructions : 1.
-Run an exploratory data analysis on the rainfall itself. Analyze the
-relationship between the amount of rain and the elevation. Do basic
-bivariate analysis (scatter plot with a line corresponding to the linear
-model, measure of correlation and hypothesis test). Also do a map of the
-rainfall and a semi-variogram. 2. Using cross-validation, choose the
-optimal value for p in the IDW estimator, with respect to the MSE . 3.
-Using the IDW estimator and the optimal p, map the variable of interest
-on the grid given prediction grid (which is stored in gridXUTM and
-gridYUTM).
-
-Preferences: \* Use XUTM/YUTM for both stations and grid, in EPSG:32632,
-with no reprojection. \* For each conclusion done let me a way to assess
-the result
-
-Data \* dati is a data.frame with columns totanno (annual rainfall, mm),
-Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM (metres,
-EPSG:32632), and anno (year). It originally has 2373 rows (about 190
-stations over several years). I have already filtered it to a single
-year, so it now has one row per station and no duplicated coordinates.
-\* grid is a data.frame with columns XUTM and YUTM. It has 1005 rows and
-is not a regular grid: every point has unique X and Y values, with
-irregular spacing. Please plot it as points, not with
-geom_tile/geom_raster.
-
-1.  Exploratory data analysis
-
-1.1 Distribution of annual rainfall
-=======
 ## Good prompt
 
 > I work on a spatial data on rainfall and have measures from several
@@ -273,7 +72,6 @@ geom_tile/geom_raster.
 1.  **Exploratory data analysis**
 
 **1.1 Distribution of annual rainfall**
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 ```{r}
 #| label: eda-rain
@@ -292,18 +90,9 @@ par(op)
 
 ```
 
-<<<<<<< HEAD
-**How to assess:** skewness near 0 and points along the Q-Q line suggest
-approximate normality; a clearly positive skewness, a right tail in the
-histogram or points leaving the line at the top indicate a skewed
-distribution. The Shapiro-Wilk p-value below 0.05 rejects normality.
-Points beyond the boxplot whiskers are candidate outliers: check whether
-they are real (very wet mountain stations) or data errors.
-=======
 The annual rainfall ranges from 465 to 2758 with a mean and a median not
 very far one from the other (around 1200 mm). Let's analyze how is the
 rainfall linked to the elevation.
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 **1.2 Rainfall vs elevation**
 
@@ -343,29 +132,11 @@ vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = dati73)
 plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
 ```
 
-<<<<<<< HEAD
-**How to assess:**
-
-- *Association:* Pearson tests the linear relationship, Spearman the
-  monotone one. A small p-value (below 0.05) rejects "no association";
-  the sign gives the direction. If Pearson and Spearman differ a lot,
-  the relationship is non-linear or driven by outliers.
-- *Strength:* $R^2$ in `summary(fit_lm)` is the share of rainfall
-  variance explained by elevation alone (and equals the Pearson
-  correlation squared). The slope is in mm of rain per metre of
-  elevation; use `confint` to see whether 0 is excluded.
-- *Model validity:* in the diagnostic plots, residuals vs fitted should
-  show no curve or funnel, and the Q-Q plot no strong departures.
-- *Caveat:* the p-values assume independent observations. If the
-  residual semivariogram is not flat (it rises with distance), the
-  stations are spatially correlated and the p-values are optimistic.
-=======
 The shapiro wilk test confirms the normality of the residuals of the
 regression, which is necessary for trusting the p-values. Though, as the
 semi-variogram of the the reiduals of the regression shows a variance
 growing with the distance, it should be kept in mind that elevation is
 not explaining all the spatial dependence.
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 1.3 Map of the rainfall
 
@@ -379,16 +150,9 @@ ggplot(dati73, aes(XUTM, YUTM, colour = totanno)) +
   labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1973")
 ```
 
-<<<<<<< HEAD
-**How to assess:** look for large-scale patterns (gradients, clusters of
-similar colours) and compare them with elevation. Neighbouring stations
-with similar colours support spatial dependence; also note where
-stations are sparse, since predictions there will be less reliable.
-=======
 A map of rainfall in the stations allows seeing a spatial dependence. It
 can be clearly seen that there is one zone with larger amounts of
 rainfall during year 1973. The coastal areas also seem to get less rain.
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 1.4 Empirical semivariogram
 
@@ -423,31 +187,10 @@ that nearby stations are more similar than chance allows, so there is
 positive spatial correlation. This is the typical, expected pattern for
 rainfall.
 
-<<<<<<< HEAD
-- *Is there spatial correlation at all?* Empirical points that fall
-  below the grey envelope at short distances mean that close stations
-  are more similar than random (spatial dependence). If the points stay
-  inside the envelope, there is little evidence of structure.
-- *Reading the shape:* nugget (value at distance 0) = measurement error
-  plus variation at scales smaller than the station spacing; sill =
-  total variance where the curve flattens; range = distance beyond which
-  stations are essentially uncorrelated. Compare the fitted sill with
-  `var(dati$totanno)`: they should be of the same order, unless there is
-  a trend (a semivariogram that keeps growing without flattening
-  suggests a trend, e.g. with elevation).
-- *Fit quality:* lower `SSErr` means a better fit among the three
-  candidates, but always check visually that the curve follows the
-  points, mainly the first lags (those with a large `np`).
-
-2.  Choice of p in IDW by leave-one-out cross-validation
-
-The IDW estimator at point $s_0$ is
-=======
 2.  Choice of p
 
     Now, let's do choose p for the IDW. The IDW estimator at point $s_0$
     is
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 
 $$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
 
@@ -516,24 +259,6 @@ their neighbors (the points far away from the red line) but that the IDW
 predicts globally not that bad (a majority of points is in the
 bottom-left or top-right areas.
 
-<<<<<<< HEAD
-- *Is the optimum a real minimum?* The red line should sit in the
-  interior of the MSE curve, with MSE rising on both sides. If the
-  minimum falls at the edge of the tested range (0.25 or 8), extend
-  `p_grid`.
-- *Is it well determined?* A very flat curve around the minimum means
-  that nearby values of p are practically equivalent, so the choice is
-  not critical.
-- *Does IDW beat a trivial predictor?* The relative skill should be
-  clearly positive (1 = perfect, 0 = no better than the mean). Points
-  close to the red 1:1 line confirm good predictions; systematic
-  departures at high or low values (IDW smooths extremes) show its bias.
-- *Caveat:* the minimum CV MSE is slightly optimistic because the same
-  data both choose p and evaluate it. For a stricter check, repeat with
-  k-fold CV or hold out some stations.
-
-=======
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
 3.  IDW map on the prediction grid
 
 ```{r}
@@ -568,41 +293,709 @@ ggplot()+
        title = "Elevation ")
 ```
 
-<<<<<<< HEAD
-**How to assess:**
-
-- *Basic consistency:* no `NA`, and the predicted range must fall inside
-  the observed range (IDW with positive weights can never exceed it; if
-  it does, there is a bug). Because of this, IDW cannot predict peaks
-  above the highest station, nor the valleys below the lowest, and the
-  map looks smoother than reality.
-- *Match with the data:* where the circles (observations) and the small
-  points (predictions) have the same colour, the map reproduces the
-  data. Visible "bull's-eyes" around isolated stations are typical of
-  IDW with large p.
-- *Reliability:* grid points whose distance to the nearest station is
-  much larger than the typical station spacing (last two outputs) are
-  extrapolations; read the map there with caution.
-- *No uncertainty measure:* IDW does not give prediction variances. If
-  you need them, kriging with the semivariogram fitted in Section 1.4 is
-  the natural next step.
-
-## Comparison of the results
-
-With the first prompt, Claude Sonnet fitted a linear regression of the
-amount of rainfall on the the elevation, the latitude and the longitude,
-which doesn't make much sense. The effects observed in plots of rainfall
-with respect to latitude and longitude are interesting but can be better
-seen on the map. On top of that it didn't provide code for a
-semi-variogram which is essential for analyzing spatial dependence on
-continuous data. Although it did make a good map and plotted rainfall
-against elevation. With the second prompt Claude is giving indication on
-how to interpret the results, which is good.
-
-Other than that, the choice of p by cross-validation and the
-interpolation map are already quite good with the first prompt.
-=======
 The mountainous regions in the south of the area understudy are
 receiving a lot of rain compared to the coastal regions. However the
 mountainous regions at the north are not receiving little water.
->>>>>>> 1d623cb3a0fb53ef268157b59ff3042cae86c6f5
+
+# Anno 1974
+
+For having only the results of the homework on this notebook, we use a R file where we put all the functions needed for this work and then we can use them thanks to the source function. The content of this R file and the AI prompts used to generate functions will be analyzed at this end of this notebook.
+
+```{r}
+
+source("../Travail_Christophe/homework-2/Useful_functions.R")
+
+```
+
+In a first time, we create a new dataset with only the observations made in 1974 thanks to the filter_target function.
+
+```{r}
+data_1974 <- filter_target(data = dati, 
+                           variable = "anno", 
+                           target = 1974)
+```
+
+## Question 1
+
+1\) Run an exploratory data analysis and comment on the results. In particular, analyze the relationship between the dependent variable (for example, total amount of rainfall, biomass, metal concentration) and the environmental descriptors.
+
+First of all, we analyse quickly the diverse variables available in the data and we create a map with the localisation of the diverse observations.
+
+```{r}
+
+board <- summary_statistics(data_1974)
+
+knitr::kable(board, digits = 2)
+```
+
+```{r}
+
+map_observations(
+  data = data_1974, 
+  var_lon = "Lon10", 
+  var_lat = "Lat10"
+)
+```
+
+Then,we analyze the relationship between the dependent variable (totanno) and the environmental descriptors.
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Quota",      
+  titre = "Rainfull vs Elevation"
+  
+)
+```
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Lon10",      
+  titre = "Rainfull vs Longitude"
+  
+)
+```
+
+```{r}
+double_graphic(
+  dataset = data_1974,
+  var_y = "totanno",   
+  var_x = "Lat10",      
+  titre = "Rainfull vs Latitude"
+  
+)
+```
+
+So, there is a positive correlation between the elevation and the quantity and the annual rainfall. On the contrary, there is a negative correlation between the annual rainfall and the longitude/latitude.
+
+Finally, we analyze spatial dependence using a variogram. We use the variables XUTM and YUTM to calculate the distance between the points where the observations in the dataset were taken.
+
+```{r}
+
+
+variogramm(
+  data = data_1974,
+  var_x = "XUTM",
+  var_y = "YUTM",
+  var_output = "totanno", 
+  code_epsg = 32632
+)
+```
+
+The semi-variance increases very quickly before reaching a cap as expected.
+
+## Question 2
+
+2\) Using cross-validation, choose the optimal value for p in the IDW estimator.
+
+```{r}
+
+results_opti <- optimise_p_idw(data = data_1974, 
+                                  var_x = "XUTM", 
+                                  var_y = "YUTM", 
+                                  var_output = "totanno",
+                                  code_epsg = 32632)
+```
+
+## Question 3
+
+3)  Using the IDW estimator and the optimal p, map the variable of interest on the grid given prediction grid.
+
+We upload the map of Italy for the grid
+
+```{r}
+#| eval: false
+install.packages(c("rnaturalearth", "rnaturalearthdata"))
+```
+
+```{r}
+library(rnaturalearth)
+
+borders_italie <- ne_countries(scale = "medium", country = "Italy", returnclass = "sf")
+```
+
+```{r}
+
+grid_idw(
+  data = data_1974, 
+  var_x = "XUTM", 
+  var_y = "YUTM", 
+  var_output = "totanno",
+  code_epsg = 32632, 
+  param_p = 3.5,
+  map = borders_italie
+)
+```
+
+## Question 4
+
+4)  provide the AI prompt in weak and good form
+
+AI used : Gemini Pro
+
+Prompt : OK, now I'd like a function that takes as arguments a dataset, a first variable, then a second variable from that dataset, and a title, and that returns a graph with the values of the first variable on the y-axis and those of the second variable on the x-axis.
+
+```{r}
+
+double_graphic <- function(dataset, var_y, var_x, titre) {
+  
+  ggplot(data = dataset, aes(x = .data[[var_x]], y = .data[[var_y]])) +
+
+    geom_point(color = "#2c3e50", size = 2, alpha = 0.6) +
+    geom_smooth(method = "lm", color = "#e74c3c", se = TRUE) +
+    
+    labs(
+      title = titre,
+      x = var_x,
+      y = var_y
+    ) +
+    
+
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14)
+    )
+}
+```
+
+Comment : With the first prompt, the function allowed just to see the coordinates of the diverse points and did not show the correlation between the two variables. So I add the line "geom_smooth(method = "lm", color = "#e74c3c", se = TRUE) +" to show the correlation thanks to the folllowing prompt : Okay, I'd like you to add a trend line to this graph showing the correlation between the two variables used as arguments.
+
+Prompt : I want a function that takes a dataset, a first variable, and then a second variable as arguments. The first variable represents the longitude of the observation, and the second variable represents the latitude of the observation. Based on these variables, the function should return a map showing the locations of the various observations in the dataset provided as an argument.
+
+```{r}
+
+map_observations <- function(dataset, var_lon, var_lat) {
+
+  leaflet(data = dataset) |>
+    # addTiles() adds the map (OpenStreetMap)
+    addTiles() |>
+    # addCircleMarkers adds a point for each observation
+    addCircleMarkers(
+      lng = dataset[[var_lon]],   
+      lat = dataset[[var_lat]],   
+      radius = 5,                 # size of points
+      color = "#FF5733",          # Color
+      stroke = FALSE,             # no border
+      fillOpacity = 0.7,          # Opacity
+      # bonus : interactive map
+      popup = paste("Lon:", dataset[[var_lon]], "<br>Lat:", dataset[[var_lat]])
+    )
+}
+```
+
+Comment : This prompt allowed me to have directly the result expected.
+
+Prompt : I'm working in spatial statistics and I have to analyse a dataset. Create a function that takes as arguments a dataset, a first variable, a second variable, and a third variable. The first variable holds the XUTM values, the second the YUTM values, and the third the output I'm working on. I want the program to calculate the distance between the different points in order to create a variogram that shows how the correlation of the output changes as the distance changes.
+
+```{r}
+variogramm <- function(dataset, var_x, var_y, var_output, code_epsg) {
+  
+  # 1. Spatial transformation (in meters using UTM)
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Dynamic formula creation (e.g., "My_Output ~ 1")
+  # "~ 1" means we are studying the raw variable, without external trend
+  formule <- as.formula(paste(var_output, "~ 1"))
+  
+  # 3. Calculation of the experimental variogram
+  # gstat automatically calculates distances and groups points into bins
+  vario_exp <- variogram(formule, data = dataset_sf)
+  
+  # 4. Graph creation with ggplot2
+  ggplot(vario_exp, aes(x = dist, y = gamma)) +
+    geom_point(color = "#2c3e50", size = 3) +
+    geom_line(color = "#3498db", linetype = "dashed", alpha = 0.6) +
+    labs(
+      title = "Variogramm",
+      subtitle = paste("Evolution of the spatial variance for :", var_output),
+      x = "Distance",
+      y = "Semi-variance (Gamma)"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+```
+
+Comment : This prompt allowed me to have directly the result expected.
+
+Prompt : I want a function that finds the optimal parameter p for the weighted inverse distance estimator and that takes as arguments the dataset and two variables—the first representing the XUTM coordinate and the second representing the YUTM coordinate.
+
+```{r}
+optimise_p_idw <- function(dataset, var_x, var_y, var_output, code_epsg) {
+  
+  # 1. Spatial conversion with dynamic variables
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Dynamic formula creation 
+  formule <- as.formula(paste(var_output, "~ 1"))
+  
+  # 3. Parameter initialization
+  p_values <- seq(0.5, 10.0, by = 0.25)
+
+  rmse_results <- numeric(length(p_values))
+  
+  # 4. Outer loop: Testing different power parameters
+  for (i in seq_along(p_values)) {
+    current_p <- p_values[i]
+    squared_errors <- numeric(nrow(dataset_sf))
+    
+    # 5. Inner loop: Leave-One-Out Cross-Validation (LOOCV)
+    for (j in 1:nrow(dataset_sf)) {
+      train_data <- dataset_sf[-j, ]
+      test_data  <- dataset_sf[j, ]
+      
+      idw_fit <- idw(
+        formula = formule,
+        locations = train_data,
+        newdata = test_data,
+        idp = current_p,
+        debug.level = 0
+      )
+      
+      # 6. Value extraction and error calculation
+      predicted_val <- idw_fit$var1.pred
+      
+      # Using double brackets [[ ]] to extract 
+      # the value of the test column via its text name
+      actual_val <- test_data[[var_output]]
+      
+      squared_errors[j] <- (predicted_val - actual_val)^2
+    }
+    
+  
+    rmse_results[i] <- sqrt(mean(squared_errors))
+  }
+  
+  # 7. Identification of the optimal value
+
+  results_df <- data.frame(Power = p_values, RMSE = rmse_results)
+  optimal_p <- results_df$Power[which.min(results_df$RMSE)]
+  
+  cat("\n The optimal parameter p", var_output, "is :", optimal_p, "\n")
+  
+  # 8. Display diagnostic plot
+  plot(results_df$Power, results_df$RMSE, type = "b", pch = 19, col = "blue",
+       xlab = "Parameter p", 
+       ylab = "RMSE",
+       main = paste("Optimisation IDW :", var_output))
+  abline(v = optimal_p, col = "red", lty = 2, lwd = 2)
+  
+}
+```
+
+Comment : The first function generated by the AI used the MSE to choose the best parameter p. To comply with the course, I replace the MSE by the RMSE even if it does not change the final result.
+
+Prompt : I want you to create a function for me that takes a dataset, an output variable, and a parameter as arguments, and returns a map with the predicted output values calculated using IDW based on the parameter provided as an argument.
+
+```{r}
+grid_idw <- function(dataset, var_x, var_y, var_output, code_epsg, param_p, map) {
+  
+  # 1. Spatial conversion of your data
+  dataset_sf <- st_as_sf(dataset, coords = c(var_x, var_y), crs = code_epsg)
+  
+  # 2. Creation of the raw grid (the large bounding box)
+  grille_vierge <- st_make_grid(dataset_sf, n = c(100, 100), what = "centers")
+  grille_sf <- st_sf(geometry = grille_vierge)
+  
+  # 3. THE SCISSOR CUT (Clipping)
+  # First ensure the mask has the same EPSG code as your data
+  map <- st_transform(map, crs = code_epsg)
+  
+  # Keep only the grid points that fall "inside" the mask
+  grille_clippee <- st_intersection(grille_sf, map)
+  
+  # 4. IDW Calculation (Only on solid ground!)
+  formule <- as.formula(paste(var_output, "~ 1"))
+  idw_resultat <- idw(
+    formula = formule,
+    locations = dataset_sf,
+    newdata = grille_clippee, # Using the clipped grid
+    idp = param_p,
+    debug.level = 0
+  )
+  
+  # 5. Map creation with borders in the background
+  ggplot() +
+    # Background layer: The border polygon (drawn in light gray)
+    geom_sf(data = map, fill = "gray95", color = "black") +
+    
+    # Interpolation layer: The predicted points
+    geom_sf(data = idw_resultat, aes(color = var1.pred), size = 3, shape = 15) +
+    
+    # Data layer: Your actual observations
+    geom_sf(data = dataset_sf, color = "black", shape = 21, fill = "white", size = 1.5) +
+    
+    scale_color_viridis_c(name = paste(var_output), "Prediction\n") +
+    labs(
+      title = "Interpolation IDW",
+      subtitle = "",
+      x = "Longitude (UTM)",
+      y = "Latitude (UTM)"
+    ) +
+    theme_minimal()
+}
+```
+
+Comment : The first prompt returned a map of the whole of Italy, which made it impossible to analyse the prediction, as it focused on only part of that territory. That is why the following prompt was needed to achieve this function: “I’d like you to modify the previous code so that the map returned focuses solely on the area where predictions could be made”.
+
+# Conclusion
+
+For the future, using prompts with more information is needed. Indeed, in absence of enough information, the functions generated do not allow to have the results expected because there are too many shaded areas to produce the correct result.
+
+# Year 1980
+
+```{r}
+#| label: setup
+library(ggplot2)
+library(gstat)
+load("../data/RainData.RData")          # adapt the path if needed
+```
+
+For this homework we work on the stations of the year 1980. The AI agent used for the two prompts is Claude Sonnet 5.5.
+
+## Data preparation
+
+We keep only the year 1980 and check that there is one row per station and no repeated coordinates.
+
+```{r}
+#| label: prep
+d80 <- subset(dati, anno == 1980)
+nrow(d80)                       # one row per station
+anyDuplicated(d80[, c("XUTM", "YUTM")])
+table(d80$Nome_Regione)
+```
+
+There are 178 stations, each one appears once, and no two stations share the same coordinates. The table gives the region written in the data: 36 stations in Basilicata, 139 in Calabria and 3 in "Puglia".
+
+The three "Puglia" stations are **kept**. The two in the north (latitude above 40°) are in the same hydrological area as Basilicata, and the one in the south is in Calabria. We create a new label `zona` that puts them in the right area. It is only used to describe the data; **all 178 stations are used** for the analysis.
+
+```{r}
+#| label: zona
+d80$zona <- as.character(d80$Nome_Regione)
+nord <- d80$Nome_Regione == "Puglia" & d80$Lat10 > 40
+d80$zona[nord] <- "Basilicata"
+d80$zona[d80$Nome_Regione == "Puglia" & !nord] <- "Calabria"
+table(d80$Nome_Regione, d80$zona)
+
+X <- cbind(d80$XUTM, d80$YUTM)  # metres, UTM 32N, no reprojection
+z <- d80$totanno
+n <- length(z)
+D <- as.matrix(dist(X))
+```
+
+The table crosses the old label (rows) and the new one (columns): the 2 northern stations are now in Basilicata and the southern one is in Calabria. `X` contains the coordinates in metres (UTM zone 32N, used as they are), `z` the rainfall, and `D` the matrix of the distances between all the stations.
+
+## Weak prompt
+
+> Here are rainfall data for Italy (data.frame `dati`, columns totanno = annual rainfall, Quota = elevation, XUTM, YUTM = coordinates, anno = year) and a prediction grid `grid`. I study the year 1980. Do an exploratory analysis of the rainfall and its link with the descriptors, choose the p of the IDW estimator by cross-validation and map the predictions on the grid. Code in R.
+
+**What the agent returned.** A regression of the rainfall on elevation, latitude and longitude, a few plots, a choice of p among whole values (1 to 5) by leave-one-out cross-validation with the MSE, and a map.
+
+```{r}
+#| label: weak
+fit_weak <- lm(totanno ~ Quota + Lat10 + Lon10, data = d80)
+round(summary(fit_weak)$coefficients, 3)
+
+loo_mse <- function(p) {
+  Dl <- D; diag(Dl) <- Inf
+  W <- Dl^(-p)
+  mean((z - as.vector(W %*% z) / rowSums(W))^2)
+}
+cv_weak <- data.frame(p = 1:5, MSE = sapply(1:5, loo_mse))
+cv_weak
+p_weak <- cv_weak$p[which.min(cv_weak$MSE)]
+p_weak
+```
+
+The first table is the regression. The coefficient of `Quota` is 0.66 with a very small p-value: 100 m more of elevation goes with about 66 mm more rain. The coefficients of latitude and longitude are not easy to interpret (the latitude is not significant, p = 0.28), and there is no reason given for putting them in the model. The second table gives the cross-validation error (MSE) for p = 1 to 5. It is the smallest for p = 3, so the agent keeps p = 3.
+
+**Comments.** The agent did what was asked, but:
+
+* the regression uses elevation and coordinates together without explaining why;
+* there is no variogram, which is the usual way to look at spatial dependence of a continuous variable;
+* p is only searched among whole values, so the best value can be missed;
+* the agent does not check whether IDW is better than a very simple prediction, and it does not say what to do with the three "Puglia" stations.
+
+## Good prompt
+
+> I work on annual rainfall measured at stations in southern Italy (Basilicata and Calabria), year 1980 only. Code in R, in chunks that can be pasted in a Quarto document. Data: `dati` (columns totanno = annual rainfall in mm, Quota = elevation in m, XUTM/YUTM = coordinates in metres, EPSG:32632, to be used as they are, anno, Nome_Regione, Lat10) and `grid`, an irregular prediction grid (XUTM, YUTM, Quota) that must be plotted as points. The three stations labelled Puglia must be kept: the two in the north behave like Basilicata, the one in the south like Calabria. 1. Exploratory analysis, short: distribution of the rainfall, relationship with elevation (scatter plot with the regression line, correlation, test), map of the stations. 2. Spatial dependence: empirical variograms of the rainfall, of the residuals after elevation and after elevation + coordinates; justify the maximum distance with the distribution of the distances between stations and the number of pairs per class, and check the independence case with a Monte Carlo envelope. 3. Choose p in the IDW estimator by leave-one-out cross-validation using the RMSE (a proper score), searching on a fine grid; compare with the trivial predictor (mean of the other stations). 4. Map the IDW predictions on `grid` with the optimal p. For each conclusion, give a way to check it, and say that evidence of spatial dependence does not by itself prove that IDW predicts well: this has to be shown with the cross-validation.
+
+**Answer.** Here is the analysis asked for by this prompt.
+
+### 1. Exploratory analysis
+
+First the distribution of the rainfall.
+
+```{r}
+#| label: eda-dist
+summary(z)
+c(SD = sd(z), CV = sd(z) / mean(z))
+round(tapply(z, d80$zona, mean))      # mean rainfall by area
+table(d80$zona)
+par(mfrow = c(1, 2))
+hist(z, breaks = 20, col = "grey80", main = "Annual rainfall, 1980", xlab = "mm")
+boxplot(z ~ d80$zona, main = "By area", ylab = "mm", xlab = "")
+par(mfrow = c(1, 1))
+```
+
+*Figure: histogram of the annual rainfall (left) and boxplot by area (right).*
+
+The rainfall goes from 212 mm to 2946 mm, with a mean of 1105 mm and a median of 1004 mm. The mean is above the median because a few stations receive a lot of rain (the histogram has a long tail on the right). The standard deviation is 485 mm, so the CV (standard deviation divided by the mean) is 0.44: the stations are very different from each other. The mean rainfall is similar in the two areas (`r mean(z[d80$zona == "Basilicata"]) |> round()` mm in Basilicata and `r mean(z[d80$zona == "Calabria"]) |> round()` mm in Calabria) and the boxplots overlap a lot, so we do not see a clear difference between areas. Besides, the stations are not spread in the same way in both areas, so a difference would not be enough to speak of a real regional effect.
+
+Now the link with elevation.
+
+```{r}
+#| label: eda-elev
+ggplot(d80, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)")
+ct_p <- cor.test(d80$Quota, d80$totanno)                        # Pearson
+ct_p
+ct_s <- cor.test(d80$Quota, d80$totanno, method = "spearman")  # rank-based check
+ct_s
+fit_el <- lm(totanno ~ Quota, data = d80)
+round(summary(fit_el)$coefficients, 4)
+r2_el <- summary(fit_el)$r.squared
+r2_el
+```
+
+*Figure: annual rainfall against elevation, with the regression line (red) and its confidence band.*
+
+The points go up with elevation, but they are very spread around the line. The Pearson correlation is `r round(ct_p$estimate, 2)` (95 % interval from `r round(ct_p$conf.int[1], 2)` to `r round(ct_p$conf.int[2], 2)`, p-value `r format(ct_p$p.value, digits = 2)`). The test says that this correlation is not zero. The Spearman correlation, which only uses the ranks and is less sensitive to extreme values, gives the same message (`r round(ct_s$estimate, 2)`). In the regression, each additional 100 m of elevation adds about `r round(100 * coef(fit_el)[2])` mm of rain, and the coefficient is significant. But the R² is only `r round(r2_el, 2)`: elevation explains about `r round(100 * r2_el)` % of the differences between stations. The rest is something else, probably the position of the station.
+
+```{r}
+#| label: eda-map
+ggplot(d80, aes(XUTM / 1000, YUTM / 1000, colour = totanno, shape = zona)) +
+  geom_point(size = 2.8) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "X (km)", y = "Y (km)", shape = "Area", title = "Annual rainfall, 1980")
+```
+
+*Figure: map of the stations (x and y in km), colour = annual rainfall, shape = area.*
+
+The stations are not regularly spread: there are groups of close stations and empty zones. The highest values (yellow) are grouped in some places and the lowest values (dark) in others, so the rainfall looks related to the location, which is what we study next.
+
+### 2. Spatial dependence: variograms
+
+The variogram compares the stations two by two: for each distance class, it gives the average of half the squared difference between the rainfall of two stations. If close stations are alike, the variogram is low for small distances. First we need a maximum distance for the variogram. We look at the distances between stations.
+
+```{r}
+#| label: vario-geometry
+dd <- D[upper.tri(D)] / 1000
+c(max_km = max(dd), half_max_km = max(dd) / 2)
+hist(dd, breaks = 30, col = "grey80", main = "Distances between stations", xlab = "km")
+abline(v = max(dd) / 2, col = "firebrick", lty = 2)
+```
+
+*Figure: histogram of the distances between all pairs of stations (km). The red line is half of the largest distance.*
+
+The largest distance between two stations is 339 km. Half of the pairs are closer than 95 km and 90 % are closer than 200 km; there are few pairs at very large distances, and these pairs always involve the stations at the opposite ends of the area. We therefore stop at half of the largest distance, 170 km (red line). We cut the distance in 15 classes of about 11 km.
+
+```{r}
+#| label: variograms
+cutoff <- max(D) / 2
+width  <- cutoff / 15
+v_raw <- variogram(totanno ~ 1,                    locations = ~ XUTM + YUTM, data = d80, cutoff = cutoff, width = width)
+v_el  <- variogram(totanno ~ Quota,                locations = ~ XUTM + YUTM, data = d80, cutoff = cutoff, width = width)
+v_xy  <- variogram(totanno ~ Quota + XUTM + YUTM,  locations = ~ XUTM + YUTM, data = d80, cutoff = cutoff, width = width)
+min(v_raw$np)                                      # smallest number of pairs in a class
+
+vv <- rbind(cbind(v_raw, model = "Raw"),
+            cbind(v_el,  model = "Residuals, elevation"),
+            cbind(v_xy,  model = "Residuals, elevation + coordinates"))
+ggplot(vv, aes(dist / 1000, gamma, colour = model)) +
+  geom_line() + geom_point(aes(size = np)) +
+  labs(x = "Distance (km)", y = "Semivariance", colour = NULL, size = "Pairs")
+
+# first classes of each variogram
+round(cbind(dist_km = v_raw$dist / 1000, pairs = v_raw$np, raw = v_raw$gamma,
+            elev = v_el$gamma, elev_xy = v_xy$gamma))[c(1:3, 8, 15), ]
+```
+
+
+The first number is the smallest number of pairs in a class: `r min(v_raw$np)`, so all the classes have many pairs and the points of the variogram are reliable. The table shows five of the classes (distance in km, number of pairs and semivariance for the three variograms).
+
+*Figure: semivariance against distance, for the raw rainfall and for the residuals after elevation and after elevation + coordinates. The size of the points is the number of pairs.*
+
+The raw variogram starts at about 130 000 for the smallest distances (8 km) and rises to about 270 000 at 164 km: stations far from each other are more different than close stations. This is a sign of spatial dependence, but also of a trend, because it keeps rising and does not flatten. After removing the effect of elevation, the curve is lower everywhere (for example about 191 000 instead of 235 000 at 85 km), so elevation explains a part of the differences. With elevation and coordinates it is lower again at short and medium distances (169 000 at 85 km), but not at the largest ones. The curves still increase with the distance, so there is some spatial structure left that these variables do not explain. The lines only join the points to help reading: they are not fitted models.
+
+To see if the structure of the residuals could just be chance, we shuffle the residuals of the elevation model among the stations 99 times. Each time we compute the variogram, and the grey band is the range of the 99 results: it shows what we get when there is no spatial dependence.
+
+```{r}
+#| label: envelope
+set.seed(1980)
+r_el <- residuals(fit_el)
+sims <- replicate(99, {
+  tmp <- d80; tmp$r <- sample(r_el)
+  variogram(r ~ 1, locations = ~ XUTM + YUTM, data = tmp, cutoff = cutoff, width = width)$gamma[seq_len(nrow(v_el))]
+})
+r_all <- variogram(I(r_el) ~ 1, locations = ~ XUTM + YUTM, data = d80, cutoff = cutoff, width = width)
+env <- data.frame(dist = r_all$dist, gamma = r_all$gamma,
+                  lo = apply(sims, 1, min), hi = apply(sims, 1, max))
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_line(aes(y = gamma)) + geom_point(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance", title = "Residuals of the elevation model vs independence")
+n_below <- sum(env$gamma < env$lo)
+```
+
+*Figure: variogram of the residuals of the elevation model (line and points) and the band expected without spatial dependence (grey).*
+
+`r n_below` classes of the observed variogram are below the grey band. `r if (n_below > 0) "These are classes where close stations are more alike than chance allows. So the residuals of the elevation model are still spatially dependent." else "No class is clearly below the band, so after taking elevation into account we do not detect a spatial dependence in the residuals."` This only tells us that the stations are not independent in space. It does not tell us if IDW makes good predictions: for that, we use cross-validation in the next part.
+
+### 3. Choice of p in IDW
+
+IDW predicts the rainfall at a point with a weighted mean of the stations, where the weights are $1/d^p$ ($d$ is the distance to the station). When p is large, the nearest stations count much more. To choose p, we remove each station in turn, predict it with the 177 others and compute the error. We keep the p with the smallest RMSE (root of the mean squared error), which is a proper score. We also compute a simple reference: predicting each station with the mean of the other stations.
+
+```{r}
+#| label: idw-cv
+Dl <- D; diag(Dl) <- Inf                        # a station never predicts itself
+loo_pred <- function(p) { W <- Dl^(-p); as.vector(W %*% z) / rowSums(W) }
+loo_rmse <- function(p) sqrt(mean((z - loo_pred(p))^2))
+
+p_grid <- seq(0.25, 8, by = 0.25)
+cv <- data.frame(p = p_grid, RMSE = sapply(p_grid, loo_rmse))
+p0 <- cv$p[which.min(cv$RMSE)]
+opt <- optimize(loo_rmse, c(max(0.01, p0 - 0.25), p0 + 0.25))   # refinement around the minimum
+p_opt <- opt$minimum
+
+pred_cv  <- loo_pred(p_opt)
+rmse_idw <- sqrt(mean((z - pred_cv)^2))
+mae_idw  <- mean(abs(z - pred_cv))
+rmse_ref <- sqrt(mean((z - (sum(z) - z) / (n - 1))^2))          # mean of the other stations
+c(p_opt = p_opt, RMSE = rmse_idw, MAE = mae_idw, RMSE_mean_of_others = rmse_ref,
+  skill = 1 - rmse_idw^2 / rmse_ref^2)
+
+head(cv[order(cv$RMSE), ], 4)                   # best values of the grid
+cv$RMSE[cv$p %in% c(0.25, 1, 8)]
+
+ggplot(cv, aes(p, RMSE)) + geom_line() + geom_point(size = 1) +
+  geom_vline(xintercept = p_opt, linetype = 2, colour = "firebrick") +
+  geom_hline(yintercept = rmse_ref, linetype = 3, colour = "grey40") +
+  labs(title = "Leave-one-out RMSE as a function of p",
+       subtitle = "Dashed red: optimal p. Dotted grey: mean of the other stations")
+```
+
+*Figure: leave-one-out RMSE for each p (dashed red line = best p, dotted grey line = error of the simple reference).*
+
+The first output gives the best p, the RMSE (`r round(rmse_idw)` mm) and the MAE (`r round(mae_idw)` mm), which is the average absolute error. The reference has an RMSE of `r round(rmse_ref)` mm, so IDW reduces the mean squared error by `r round(100 * (1 - rmse_idw^2 / rmse_ref^2))` % (the last number, `skill`, is this reduction written as a fraction). The table below shows the best values of p on the grid, and the three numbers after it are the RMSE for p = 0.25, 1 and 8. The curve starts high for small p (all the stations count almost the same, so the prediction is close to the mean), goes down to the minimum at p = `r round(p_opt, 2)`, then goes up again for large p (only the closest station counts). The curve is flat around the minimum, so values of p close to `r round(p_opt, 1)` give almost the same result.
+
+```{r}
+#| label: idw-obs-pred
+ggplot(data.frame(obs = z, pred = pred_cv), aes(pred, obs)) +
+  geom_point(alpha = 0.7) + geom_abline(colour = "firebrick") + coord_equal() +
+  labs(x = "Leave-one-out prediction (mm)", y = "Observed (mm)")
+```
+
+*Figure: observed rainfall against the leave-one-out prediction. The red line is the line where prediction = observation.*
+
+The points are around the red line, so IDW follows the general level of the rainfall. Some points are far from the line: these stations are very different from their neighbours, and IDW cannot predict them. The optimal p is **`r round(p_opt, 2)`**, with a cross-validation RMSE of `r round(rmse_idw, 1)` mm.
+
+### 4. IDW map on the prediction grid
+
+We predict the rainfall on the points of `grid` with p = `r round(p_opt, 2)`. We also check our function against the `idw` function of the `gstat` package.
+
+```{r}
+#| label: idw-map
+idw_grid <- function(x0, y0, x, y, z, p) {
+  d <- sqrt(outer(x0, x, "-")^2 + outer(y0, y, "-")^2)
+  d[d < 1e-6] <- 1e-6                           # grid point on a station: its own value
+  W <- d^(-p); as.vector(W %*% z) / rowSums(W)
+}
+grid$pred <- idw_grid(grid$XUTM, grid$YUTM, d80$XUTM, d80$YUTM, z, p_opt)
+
+# check with the idw function of gstat
+chk <- idw(totanno ~ 1, locations = ~ XUTM + YUTM, data = d80, newdata = grid, idp = p_opt, debug.level = 0)
+max(abs(chk$var1.pred - grid$pred))
+summary(grid$pred)
+
+ggplot() +
+  geom_point(data = grid, aes(XUTM / 1000, YUTM / 1000, colour = pred), size = 2.5) +
+  geom_point(data = d80, aes(XUTM / 1000, YUTM / 1000), shape = 4, size = 1) +
+  scale_colour_viridis_c(option = "C", name = "mm") + coord_equal() +
+  labs(x = "X (km)", y = "Y (km)", title = paste0("IDW prediction, 1980 (p = ", round(p_opt, 2), ")"),
+       subtitle = "Crosses: stations")
+```
+
+The difference with `gstat::idw` is about 10⁻¹² (the first number), so the two give the same predictions. The summary shows the predicted rainfall on the grid: from about `r round(min(grid$pred))` mm to about `r round(max(grid$pred))` mm, with a median of about `r round(median(grid$pred))` mm.
+
+*Figure: IDW prediction on the grid (colour); the crosses are the stations.*
+
+The map is smooth and follows the stations: the high values are around the groups of stations with a lot of rain, and the low values in the zones where stations have little rain. Around each station, the prediction is close to its measure.
+
+```{r}
+#| label: coverage
+grid$d_nn <- apply(sqrt(outer(grid$XUTM, d80$XUTM, "-")^2 + outer(grid$YUTM, d80$YUTM, "-")^2), 1, min) / 1000
+summary(grid$d_nn)                              # distance (km) to the nearest station
+mean(grid$Quota > max(d80$Quota))               # share of grid points higher than the highest station
+```
+
+The first output is the distance (in km) between each grid point and the nearest station: it is 5.7 km for half of the points, but it goes up to 46 km for a few of them. In these places the map is only an extension of far stations and is less reliable. The last number says that 3 % of the grid points are higher than the highest station, and IDW never predicts values outside the range of the observed rainfall: the highest places are probably under-estimated.
+
+## Comparison of the two prompts
+
+We compare the p and the cross-validation RMSE obtained with the two answers.
+
+```{r}
+#| label: compare-weak-good
+c(p_weak = p_weak, RMSE_weak = loo_rmse(p_weak), p_good = round(p_opt, 2), RMSE_good = rmse_idw)
+```
+
+With the weak prompt (p = 3) the RMSE is 360 mm, and with the good prompt (p = `r round(p_opt, 2)`) it is `r round(rmse_idw)` mm. The difference is very small, so the choice of p is not what changes the most between the two answers. The difference is in the rest of the analysis.
+
+| | Weak prompt | Good prompt |
+|---|---|---|
+| Exploratory analysis | Regression on elevation and coordinates | Short: distribution, elevation (correlation and test), map |
+| Spatial dependence | Not studied | Variograms (raw and residuals), number of pairs, band without dependence |
+| Choice of p | Whole values from 1 to 5 | Fine grid, RMSE |
+| Reference | None | Mean of the other stations |
+| Stations | Not discussed | All 178 kept, "Puglia" stations assigned |
+| Checks | None | Each conclusion can be checked |
+
+The weak prompt gives a working analysis quickly, but the agent decides alone what to do and what to leave out: no variogram, a rough search for p, and nothing about the stations. The good prompt gives the data, the stations to keep, the score and the checks, so the answer is more precise and easier to verify. In both cases we have to read the answer carefully: the AI can run an analysis, but the choices (which stations, which score, which maximum distance) must be justified by us.
+
+# Conclusion: the three years
+
+We apply the same checks to the three years, to see what stays the same and what changes.
+
+```{r}
+#| label: summary-3-years
+load("../data/RainData.RData")          # original data
+summ <- do.call(rbind, lapply(c(1973, 1974, 1980), function(y) {
+  d <- subset(dati, anno == y); zz <- d$totanno; nn <- length(zz)
+  Dm <- as.matrix(dist(cbind(d$XUTM, d$YUTM))); diag(Dm) <- Inf
+  rm <- function(p) { W <- Dm^(-p); sqrt(mean((zz - as.vector(W %*% zz) / rowSums(W))^2)) }
+  pg <- seq(0.25, 8, by = 0.25); p0 <- pg[which.min(sapply(pg, rm))]
+  op <- optimize(rm, c(max(0.01, p0 - 0.25), p0 + 0.25))
+  ref <- sqrt(mean((zz - (sum(zz) - zz) / (nn - 1))^2))   # mean of the other stations
+  dg <- sqrt(outer(grid$XUTM, d$XUTM, "-")^2 + outer(grid$YUTM, d$YUTM, "-")^2)
+  Wg <- dg^(-op$minimum); pg_map <- as.vector(Wg %*% zz) / rowSums(Wg)   # IDW map on the grid
+  data.frame(Year = y, Stations = nn, Mean_rain = round(mean(zz)),
+             Cor_elevation = round(cor(d$Quota, zz), 2),
+             R2_elevation = round(summary(lm(zz ~ d$Quota))$r.squared, 2),
+             Cor_lat = round(cor(d$Lat10, zz), 2), Cor_lon = round(cor(d$Lon10, zz), 2),
+             Optimal_p = round(op$minimum, 2), LOO_RMSE = round(op$objective),
+             RMSE_mean_of_others = round(ref),
+             Reduction_MSE_pct = round(100 * (1 - op$objective^2 / ref^2)),
+             Cor_map_elevation = round(cor(pg_map, grid$Quota), 2))
+}))
+knitr::kable(summ)
+```
+
+The table gives, for each year, the number of stations, the mean annual rainfall (mm), the correlation and the R² of the rainfall with the elevation, the correlation with the latitude and the longitude, the optimal p of the IDW (the same procedure for the three years: leave-one-out RMSE), the cross-validation RMSE (mm), the RMSE of the simple reference (mean of the other stations), the reduction of the mean squared error obtained with IDW, and the correlation between the IDW map and the elevation of the grid points.
+
+**1) Exploratory analysis.** In the three years the rainfall increases with the elevation (correlation from `r min(summ$Cor_elevation)` to `r max(summ$Cor_elevation)`, all significant), which is what we expect, but elevation only explains `r round(100 * min(summ$R2_elevation))` to `r round(100 * max(summ$R2_elevation))` % of the differences between stations. The latitude and the longitude have weak correlations that change from one year to the other, so they do not give a stable effect. The variograms increase with the distance: close stations are more alike than distant ones. In 1973 and 1980, where we looked at it, part of this structure is still there once the elevation is taken into account. The level of rain changes a lot between years (1974 is the driest year, with a mean of `r summ$Mean_rain[2]` mm against `r summ$Mean_rain[1]` mm in 1973).
+
+**2) Choice of p.** The optimal p is of the same order each year (`r summ$Optimal_p[1]` in 1973, `r summ$Optimal_p[2]` in 1974, `r summ$Optimal_p[3]` in 1980), so the nearest stations count much more than the far ones. The cross-validation RMSE is between `r min(summ$LOO_RMSE)` and `r max(summ$LOO_RMSE)` mm, and IDW reduces the mean squared error by `r min(summ$Reduction_MSE_pct)` to `r max(summ$Reduction_MSE_pct)` % compared with the mean of the other stations: IDW predicts better than a very simple prediction in each year, and this is shown by the cross-validation, not by the spatial dependence alone.
+
+**3) Maps.** The three maps show the same pattern: the predicted rainfall is higher where the elevation is higher (correlation between the map and the elevation of the grid points from `r min(summ$Cor_map_elevation)` to `r max(summ$Cor_map_elevation)`), and the surfaces are smooth. The 1974 map was drawn on a regular grid cut to the borders of Italy, and the 1973 and 1980 maps on the given prediction grid, so the maps do not cover exactly the same points. Differences between the maps should be read carefully, because they come both from the rain of the year and from the stations available (`r summ$Stations[1]`, `r summ$Stations[2]` and `r summ$Stations[3]` stations, not exactly the same ones). Where the grid is far from the stations, the map is only an extension of the nearest stations.
+
+**4) Prompts.** For each year, the prompt with more information (data, steps, score to use, way to check the results) gives a more precise and complete analysis than the weak prompt. In 1973 and 1980 the good prompt added a variogram, a fine search of p and a comparison with a simple reference. In 1974 the prompts were used to write one function at a time, and the first answers had to be completed by a second, more precise prompt (a trend line on the scatter plot, a map focused on the study area, the RMSE instead of the MSE). In all cases, the AI answer has to be read and checked: the choices (stations kept, score, distances) must be justified by us.

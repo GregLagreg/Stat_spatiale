@@ -1,6 +1,8 @@
 ---
 title: "Homework 2"
-format: html
+format: 
+  html : 
+    embed-resources: true
 ---
 
 # Anno 1974
@@ -9,7 +11,7 @@ For having only the results of the homework on this notebook, we use a R file wh
 
 ```{r}
 
-source("Useful_functions.R")
+source("../Travail_Christophe/homework-2/Useful_functions.R")
 
 ```
 
