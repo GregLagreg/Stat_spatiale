@@ -1,0 +1,303 @@
+---
+title: "Homework 1"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(geoR); library(gstat); library(sf); library(MBA); library(ggplot2)
+data(wolfcamp)
+coords <- wolfcamp$coords
+z      <- wolfcamp$data
+```
+
+In this homework we work with the Wolfcamp data (85 measurements of the water level of an aquifer in Texas). In the first part we ask an AI agent whether the data are spatially dependent, with a bad and a good prompt. In the second part we interpolate the data with IDW and multilevel B-splines.
+
+# Part 1: spatial dependence
+
+We used Gemini 3.1 Pro, with the data given as a csv file (`x`, `y`, `niveau_eau`).
+
+## Bad prompt
+
+> Tell me if the data are spatially dependent
+
+**Answer.** Gemini wrote some Python code, plotted a variogram and said *"Yes, the data are highly spatially dependent."* We asked again with *"You have to use tests and explain all the process (references, hypothesis...)"*: the explanation was better written, but the analysis and the conclusion did not change.
+
+We redo the figure it produced: a variogram of the raw data, computed over all distances with 14 equal-width classes (15 breakpoints), without any trend removal.
+
+```{r}
+#| label: bad-variogram
+d  <- as.numeric(dist(coords))                       # distances between all pairs
+sv <- 0.5 * as.numeric(dist(z))^2                    # semivariance of each pair
+br <- seq(0, max(d), length.out = 15)                # same classes as the AI code
+cl <- cut(d, br, include.lowest = TRUE, right = FALSE)
+bad_vario <- data.frame(distance = tapply(d, cl, mean), semivariance = tapply(sv, cl, mean))
+plot(bad_vario, type = "b", pch = 16, main = "Empirical semivariogram (bad prompt)",
+     xlab = "Distance", ylab = "Semivariance")
+grid()
+```
+
+*The semivariance increases steadily with the distance and never levels off, which is what the AI described as "strong spatial dependence".*
+
+**Comment.** The prompt is too short, so Gemini picked a generic method without knowing what kind of data it had. The variogram it shows keeps increasing and never flattens, which means the mean is not constant (there is a trend), but this is not mentioned. So the answer may only reflect the trend and not a real dependence between neighbouring points. There is also no test on the variogram and the code is in Python, so it cannot be reused directly in our R workflow.
+
+## Good prompt
+
+> I am a student in spatial statistics. The Wolfcamp data (R package `geoR`: 85 piezometric head measurements `data` at irregular locations `coords`) are geostatistical data. In R with `geoR`, assess spatial dependence as follows: (1) map the data and plot the response against each coordinate; (2) compute the empirical variogram of the raw data with `variog` (maximum distance = half of the largest distance) and comment on stationarity; (3) fit first- and second-order polynomial trends in the coordinates, compare them (F-test, AIC) and compute the empirical variogram of the residuals; (4) build a Monte Carlo envelope under spatial independence with `variog.mc.env` (permutation of the data over the locations) and compare the residual variogram with it; (5) conclude on spatial dependence beyond the trend. For each step give the null hypothesis, the code and the interpretation, and finish with the limitations.
+
+**Answer.** Here is the analysis asked for in this prompt, run in R.
+
+We first look at the data.
+
+```{r}
+#| label: p1-explore
+summary(wolfcamp)
+plot(wolfcamp)
+```
+
+*The water level changes steadily over the area (high on one side, low on the other), so there may be a trend.*
+
+Then the variogram of the raw data.
+
+```{r}
+#| label: p1-raw
+md    <- 0.5 * max(dist(coords))
+v_raw <- variog(wolfcamp, max.dist = md, messages = FALSE)
+plot(v_raw, main = "Raw empirical variogram")
+```
+
+*Each point is the average dissimilarity between pairs of observations at a given distance. The curve keeps increasing and never levels off, which is typical of a trend.*
+
+We therefore test a trend in the coordinates (H0: the mean does not depend on the location) and look at the variogram of the residuals.
+
+```{r}
+#| label: p1-trend
+x <- coords[, 1]; y <- coords[, 2]
+fit0 <- lm(z ~ 1)
+fit1 <- lm(z ~ x + y)
+fit2 <- lm(z ~ x + y + I(x^2) + I(y^2) + I(x * y))
+anova(fit0, fit1, fit2)
+AIC(fit0, fit1, fit2)
+```
+
+```{r}
+#| label: p1-resid
+g1 <- as.geodata(cbind(coords, residuals(fit1)))
+g2 <- as.geodata(cbind(coords, residuals(fit2)))
+v1 <- variog(g1, max.dist = md, messages = FALSE)
+v2 <- variog(g2, max.dist = md, messages = FALSE)
+par(mfrow = c(1, 3))
+plot(v_raw, main = "Raw data")
+plot(v1, main = "Residuals, 1st order")
+plot(v2, main = "Residuals, 2nd order")
+par(mfrow = c(1, 1))
+```
+
+*Raw data on the left, residuals of a linear trend in the middle and of a quadratic trend on the right. Once the trend is removed, what is left is the dependence that the trend does not explain.*
+
+Finally, to know whether this remaining structure is real, we shuffle the values among the locations many times. This gives the variograms we would get if the data were independent (H0), drawn as an envelope.
+
+```{r}
+#| label: p1-env
+set.seed(1)
+env_raw <- variog.mc.env(wolfcamp, obj.variog = v_raw, nsim = 499, messages = FALSE)
+env_res <- variog.mc.env(g1, obj.variog = v1, nsim = 499, messages = FALSE)
+par(mfrow = c(1, 2))
+plot(v_raw, envelope = env_raw, main = "Raw data")
+plot(v1, envelope = env_res, main = "1st-order residuals")
+par(mfrow = c(1, 1))
+
+short <- which(v1$u <= md / 2)                       # short and medium lags
+n_below <- sum(v1$v[short] < env_res$v.lower[short])
+p_f1 <- anova(fit0, fit1)$`Pr(>F)`[2]
+p_f2 <- anova(fit1, fit2)$`Pr(>F)`[2]
+```
+
+*If the points are below the envelope at short distances, close observations are more alike than chance would allow.*
+
+A linear trend is significant (p = `r signif(p_f1, 2)`), and adding quadratic terms gives p = `r signif(p_f2, 2)`. For the residuals of the linear trend, `r n_below` of the `r length(short)` short and medium distance classes are below the envelope. `r if (n_below > 0) "So there is spatial dependence even after removing the trend, and a model with a trend plus spatially correlated errors makes sense." else "So after removing the trend there is no clear dependence left: the dependence seen on the raw data comes mostly from the trend."` These conclusions have limits: we only have 85 points (few pairs at large distances), the variogram depends on the distance classes chosen, and we assumed that dependence does not depend on direction.
+
+## Comparison
+
+| | Bad prompt | Good prompt |
+|---|---|---|
+| Information given to the AI | Only the question | Type of data, package, steps, expected output |
+| Method | Raw variogram only | Trend, residual variogram, independence envelope |
+| Trend | Not mentioned | Tested and removed |
+| Test | None | Envelope under independence |
+| Conclusion | "Highly dependent", trend and dependence mixed | Dependence beyond the trend, with limits |
+| Reuse | Python, arbitrary options | R, all options stated |
+
+The bad prompt gives a quick and confident answer that is hard to trust, because it does not separate the trend from the spatial dependence. Asking for "tests and explanations" only improved the writing. With the good prompt, the AI knows the data are geostatistical and follows the right steps, so the answer is precise and can be checked. In both cases the output has to be verified: here, the trend visible on the raw variogram is exactly what the first answer missed.
+
+# Part 2: interpolation
+
+## a) Choice of p for IDW
+
+IDW predicts a value as a weighted average of the observations, with weights $1/d^p$ (d is the distance). A larger p gives more weight to the closest points and a smoother surface. To choose p we use leave-one-out cross-validation: each point is removed, predicted from the others with `idw` from `gstat`, and we keep the p with the smallest error (MSE, and the same error divided by the standard deviation of the data).
+
+Prompt used (Claude Sonnet 5.5):
+
+> I am a student in spatial statistics, I am working on the wolfcamp geodata. Write an R function that chooses the best parameter p in Inverse Distance Weighting by leave one out validation evaluated by MSE. Use the idw implemented in gstat and return a plot of the criterion according to p. Add as a second criterion the cross-validation coefficient with errors standardized by the standard deviation of the data without observation i.
+
+```{r}
+#| label: choose-p
+choose_idw_p <- function(coords, z, p_grid = seq(0.5, 6, by = 0.25),
+                         criterion = c("MSE", "CV")) {
+  criterion <- match.arg(criterion)
+  n   <- length(z)
+  pts <- st_as_sf(data.frame(x = coords[, 1], y = coords[, 2], z = z),
+                  coords = c("x", "y"), crs = NA)
+  sd_loo <- sapply(seq_len(n), function(i) sd(z[-i]))      # sigma_{-i}
+
+  loo <- function(p) {
+    pred <- vapply(seq_len(n), function(i)
+      idw(z ~ 1, locations = pts[-i, ], newdata = pts[i, ],
+          idp = p, debug.level = 0)$var1.pred, numeric(1))
+    c(MSE = mean((z - pred)^2), CV = mean(((pred - z) / sd_loo)^2))
+  }
+  tab    <- data.frame(p = p_grid, t(sapply(p_grid, loo)))
+  best_p <- tab$p[which.min(tab[[criterion]])]
+
+  plt <- ggplot(tab, aes(p, .data[[criterion]])) +
+    geom_line() + geom_point() +
+    geom_vline(xintercept = best_p, linetype = "dashed", colour = "red") +
+    labs(title = paste("Leave-one-out", criterion, "for IDW"),
+         subtitle = paste("Best p =", best_p), x = "p", y = criterion) +
+    theme_minimal()
+  list(best_p = best_p, table = tab, plot = plt)
+}
+
+out_mse <- choose_idw_p(coords, z, criterion = "MSE")
+out_cv  <- choose_idw_p(coords, z, criterion = "CV")
+c(p_MSE = out_mse$best_p, p_CV = out_cv$best_p)
+out_mse$plot
+```
+
+*The error for each value of p; the red line marks the best one.*
+
+The best p is `r out_mse$best_p` with the MSE and `r out_cv$best_p` with the CV coefficient. It is inside the range tested, so there is no need to extend it.
+
+## b) IDW and multilevel B-splines on a 20x20 grid
+
+Multilevel B-splines (MBA) build a smooth surface by adding layers of finer and finer detail. The number of layers `h` controls the smoothness: few layers give a smooth surface, many layers follow the data closely and can overfit. We choose `h` by leave-one-out cross-validation, as for p.
+
+Prompt used (Claude Sonnet 5.5):
+
+> I work with wolfcamp data. Build a 20x20 grid from the coordinates and compare IDW (use the choose_idw_p() function to choose p) and multilevel B-splines (mba.surf and mba.points from MBA). Choose the smoothing level of the splines by cross-validation too. Compare the methods by K-fold cross-validation with a proper score.
+
+To compare the methods we hide part of the data (10 folds), predict it with each method and measure the error. The main score is the squared error (MSE, and RMSE in the units of the data), which is a proper score. We also give the MAE as a check. In each fold, p and `h` are chosen using the training data only.
+
+```{r}
+#| label: helpers
+idw_predict <- function(ctr, ztr, cte, p) {
+  tr <- st_as_sf(data.frame(x = ctr[, 1], y = ctr[, 2], z = ztr), coords = c("x", "y"), crs = NA)
+  te <- st_as_sf(data.frame(x = cte[, 1], y = cte[, 2]),           coords = c("x", "y"), crs = NA)
+  idw(z ~ 1, tr, te, idp = p, debug.level = 0)$var1.pred
+}
+mba_predict <- function(ctr, ztr, cte, h)
+  mba.points(cbind(ctr, ztr), cte, n = 1, m = 1, h = h, extend = TRUE)$xyz.est[, 3]
+
+# h chosen by leave-one-out MSE, as p for IDW
+choose_mba_h <- function(coords, z, h_grid = 2:10) {
+  n <- length(z)
+  mse <- sapply(h_grid, function(h)
+    mean((z - vapply(seq_len(n), function(i)
+      mba_predict(coords[-i, ], z[-i], coords[i, , drop = FALSE], h), numeric(1)))^2,
+      na.rm = TRUE))
+  data.frame(h = h_grid, MSE = mse)
+}
+h_tab <- choose_mba_h(as.matrix(coords), z)
+h_tab
+ggplot(h_tab, aes(h, MSE)) + geom_line() + geom_point() +
+  labs(title = "Leave-one-out MSE of MBA", x = "h (levels)") + theme_minimal()
+```
+
+*The error of MBA for each number of layers h.*
+
+```{r}
+#| label: compare
+compare_interp <- function(coords, z, ngrid = 20, K = 10, seed = 123,
+                           p_grid = seq(0.5, 6, by = 0.25), h_grid = 2:10) {
+  coords <- as.matrix(coords); n <- length(z)
+
+  ## 1. 20x20 grid built from the coordinates, parameters chosen on all data
+  p_full <- choose_idw_p(coords, z, p_grid)$best_p
+  ht     <- choose_mba_h(coords, z, h_grid)
+  h_full <- ht$h[which.min(ht$MSE)]
+  surf <- mba.surf(cbind(coords, z), no.X = ngrid, no.Y = ngrid, n = 1, m = 1,
+                   h = h_full, extend = TRUE, sp = FALSE)$xyz.est
+  grid <- expand.grid(x = surf$x, y = surf$y)
+  grid$MBA <- as.vector(surf$z)
+  grid$IDW <- idw_predict(coords, z, as.matrix(grid[, c("x", "y")]), p_full)
+  gl <- rbind(data.frame(grid[, c("x", "y")], method = "IDW", pred = grid$IDW),
+              data.frame(grid[, c("x", "y")], method = "MBA", pred = grid$MBA))
+  maps <- ggplot(gl, aes(x, y, fill = pred)) + geom_raster() +
+    geom_point(data = data.frame(x = coords[, 1], y = coords[, 2]), aes(x, y),
+               inherit.aes = FALSE, size = 0.7) +
+    scale_fill_viridis_c() + coord_equal() + facet_wrap(~method) +
+    labs(title = paste0(ngrid, "x", ngrid, " grid"),
+         subtitle = paste0("IDW: p = ", p_full, " / MBA: h = ", h_full), fill = "Head") +
+    theme_minimal()
+
+  ## 2. K-fold cross-validation with nested selection of p and h
+  set.seed(seed)
+  fold <- sample(rep(seq_len(K), length.out = n))
+  cv <- data.frame(obs = z, IDW = NA_real_, MBA = NA_real_, sd_tr = NA_real_,
+                   p_used = NA_real_, h_used = NA_real_)
+  for (k in seq_len(K)) {
+    te <- which(fold == k); tr <- which(fold != k)
+    p_k <- choose_idw_p(coords[tr, ], z[tr], p_grid)$best_p
+    hk  <- choose_mba_h(coords[tr, ], z[tr], h_grid)
+    h_k <- hk$h[which.min(hk$MSE)]
+    cv$p_used[te] <- p_k; cv$h_used[te] <- h_k; cv$sd_tr[te] <- sd(z[tr])
+    cv$IDW[te] <- idw_predict(coords[tr, ], z[tr], coords[te, , drop = FALSE], p_k)
+    cv$MBA[te] <- mba_predict(coords[tr, ], z[tr], coords[te, , drop = FALSE], h_k)
+  }
+
+  ## 3. Scores
+  score <- function(pred) {
+    e <- cv$obs - pred
+    c(MSE = mean(e^2), RMSE = sqrt(mean(e^2)), CV = mean((e / cv$sd_tr)^2),
+      MAE = mean(abs(e)), n_NA = sum(is.na(pred)))
+  }
+  metrics <- rbind(IDW = score(cv$IDW), MBA = score(cv$MBA))
+
+  ## 4. Paired tests on the errors
+  w_sq  <- wilcox.test((cv$obs - cv$IDW)^2, (cv$obs - cv$MBA)^2, paired = TRUE)
+  w_abs <- wilcox.test(abs(cv$obs - cv$IDW), abs(cv$obs - cv$MBA), paired = TRUE)
+
+  err <- rbind(data.frame(method = "IDW", obs = cv$obs, pred = cv$IDW),
+               data.frame(method = "MBA", obs = cv$obs, pred = cv$MBA))
+  obs_pred <- ggplot(err, aes(obs, pred)) + geom_point(alpha = 0.7) +
+    geom_abline(colour = "red") + facet_wrap(~method) + coord_equal() +
+    labs(title = "Observed vs cross-validated prediction") + theme_minimal()
+
+  list(p_full = p_full, h_full = h_full, cv = cv, metrics = metrics,
+       w_sq = w_sq, w_abs = w_abs, maps = maps, obs_pred = obs_pred)
+}
+
+res <- compare_interp(coords, z)
+round(res$metrics, 2)
+table(p = res$cv$p_used)     # stability of p across folds
+table(h = res$cv$h_used)     # stability of h across folds
+res$w_sq; res$w_abs
+res$maps
+res$obs_pred
+```
+
+*First the 20x20 prediction maps of IDW and MBA (dots are the observations, colour is the predicted level), then observed against predicted values in cross-validation (the closer to the red line, the better). The table gives the scores and the Wilcoxon tests say whether the difference between the methods is real.*
+
+## Conclusion
+
+The two maps have the same general pattern; IDW has small bumps around the observations and MBA is smoother. In cross-validation the RMSE is `r round(res$metrics["IDW","RMSE"], 1)` for IDW and `r round(res$metrics["MBA","RMSE"], 1)` for MBA, and the MAE is `r round(res$metrics["IDW","MAE"], 1)` and `r round(res$metrics["MBA","MAE"], 1)`. The paired Wilcoxon tests give p = `r signif(res$w_sq$p.value, 2)` on the squared errors and p = `r signif(res$w_abs$p.value, 2)` on the absolute errors. `r if (min(res$w_sq$p.value, res$w_abs$p.value) > 0.05) "The differences are not significant, so with 85 observations the two methods have similar accuracy. MBA may be a bit better on the squared error and it is faster, but we cannot say that it is clearly better." else "At least one test is significant, but the gain is small and depends on the score used."`
+
+Neither method takes the trend into account or gives an uncertainty, and the grid cells outside the area covered by the data are extrapolations. Interpolating the trend and the residuals separately, or kriging with a trend, would be a natural next step.

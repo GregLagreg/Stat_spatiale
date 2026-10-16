@@ -1,0 +1,141 @@
+---
+title: "Homework 2 – Question 2"
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(ggplot2)
+library(gstat)
+load("../data/RainData.RData")   # data.frame `dati` (stations of all years) and `grid`
+```
+
+# Question 2: choice of p in the IDW estimator
+
+## Method
+
+The power $p$ of the IDW estimator controls how fast the weight of a station decreases with the distance: with $p$ close to 0 all stations count almost the same and the prediction is close to the overall mean; with a large $p$ only the nearest stations matter and the surface follows the observations closely. For each year (1973, 1974 and 1980), we choose $p$ by leave-one-out cross-validation: each station is removed in turn and predicted from the others, and we keep the $p$ with the smallest RMSE, searching on a grid from 0.25 to 8 and refining around the minimum. The result is compared with a simple reference, the mean of the other stations.
+
+```{r}
+#| label: q2-function
+#| code-fold: true
+loocv_idw <- function(d, p_grid = seq(0.25, 8, by = 0.25)) {
+  z  <- d$totanno; n <- length(z)
+  Dm <- as.matrix(dist(cbind(d$XUTM, d$YUTM))); diag(Dm) <- Inf   # a station never predicts itself
+  pred <- function(p) { W <- Dm^(-p); as.vector(W %*% z) / rowSums(W) }
+  rmse <- function(p) sqrt(mean((z - pred(p))^2))
+  curve <- data.frame(p = p_grid, RMSE = sapply(p_grid, rmse))
+  p0  <- curve$p[which.min(curve$RMSE)]
+  opt <- optimize(rmse, c(max(0.01, p0 - 0.25), p0 + 0.25))        # refinement around the minimum
+  ref <- sqrt(mean((z - (sum(z) - z) / (n - 1))^2))                 # mean of the other stations
+  near <- curve$p[curve$RMSE <= 1.01 * opt$objective]               # p giving an RMSE within 1 % of the best
+  pr <- pred(opt$minimum)
+  hi <- z > quantile(z, 0.9); lo <- z < quantile(z, 0.1)
+  list(curve = curve, p_opt = opt$minimum, rmse = opt$objective, ref = ref,
+       mae = mean(abs(z - pr)), n = n, p_low = min(near), p_high = max(near),
+       r_small = curve$RMSE[1], r_large = curve$RMSE[nrow(curve)],
+       cor = cor(z, pr), bias_hi = mean(pr[hi] - z[hi]), bias_lo = mean(pr[lo] - z[lo]),
+       cv = data.frame(obs = z, pred = pr))
+}
+
+years <- c(1973, 1974, 1980)
+q2 <- lapply(years, function(y) loocv_idw(subset(dati, anno == y)))
+names(q2) <- years
+get <- function(f) sapply(q2, `[[`, f)
+```
+
+## Results
+
+```{r}
+#| label: q2-table
+q2_tab <- data.frame(
+  Year = years,
+  Stations = get("n"),
+  `Optimal p` = round(get("p_opt"), 2),
+  `p within 1 % of the best RMSE` = sapply(q2, function(r) paste0(r$p_low, " - ", r$p_high)),
+  RMSE = round(get("rmse")),
+  MAE = round(get("mae")),
+  `RMSE of the reference` = round(get("ref")),
+  `MSE reduction (%)` = round(100 * (1 - get("rmse")^2 / get("ref")^2)),
+  check.names = FALSE)
+knitr::kable(q2_tab, row.names = FALSE)
+```
+
+The table gives, for each year, the number of stations, the optimal $p$, the range of $p$ whose RMSE is less than 1 % above the best one, the cross-validation RMSE and MAE (in mm), the RMSE of the reference and the reduction of the mean squared error obtained with the IDW compared with the reference. The optimal $p$ is `r q2_tab[["Optimal p"]][1]` in 1973, `r q2_tab[["Optimal p"]][2]` in 1974 and `r q2_tab[["Optimal p"]][3]` in 1980. In each year the IDW predicts clearly better than the reference: the RMSE goes from `r q2_tab[["RMSE of the reference"]][1]`, `r q2_tab[["RMSE of the reference"]][2]` and `r q2_tab[["RMSE of the reference"]][3]` mm to `r q2_tab$RMSE[1]`, `r q2_tab$RMSE[2]` and `r q2_tab$RMSE[3]` mm, which is a reduction of the mean squared error of `r min(q2_tab[["MSE reduction (%)"]])` to `r max(q2_tab[["MSE reduction (%)"]])` %.
+
+```{r}
+#| label: q2-curves
+#| fig-width: 12
+#| fig-height: 3.8
+curves <- do.call(rbind, lapply(years, function(y) cbind(q2[[as.character(y)]]$curve, Year = y)))
+marks  <- data.frame(Year = years, p_opt = get("p_opt"), ref = get("ref"))
+ggplot(curves, aes(p, RMSE)) +
+  geom_line() + geom_point(size = 0.8) +
+  geom_vline(data = marks, aes(xintercept = p_opt), colour = "firebrick", linetype = 2) +
+  geom_hline(data = marks, aes(yintercept = ref), colour = "grey40", linetype = 3) +
+  facet_wrap(~ Year, nrow = 1, scales = "free_y") +
+  labs(x = "p", y = "Leave-one-out RMSE (mm)",
+       title = "Choice of p by leave-one-out cross-validation",
+       subtitle = "Dashed red: optimal p. Dotted grey: mean of the other stations") +
+  theme_minimal()
+```
+
+*Figure 1: leave-one-out RMSE as a function of p, one panel per year (each panel has its own vertical scale). The dashed red line is the optimal p and the dotted grey line is the RMSE of the reference.*
+
+**Comment on Figure 1.** In each year the RMSE reaches a clear minimum, at $p$ = `r q2_tab[["Optimal p"]][1]`, `r q2_tab[["Optimal p"]][2]` and `r q2_tab[["Optimal p"]][3]`. The curve is flat around it: the values of $p$ within 1 % of the best RMSE form an interval about 1 unit wide (see the table), so the choice of $p$ is not critical.
+
+```{r}
+#| label: q2-obs-pred
+#| fig-width: 12
+#| fig-height: 3.8
+cvs <- do.call(rbind, lapply(years, function(y) cbind(q2[[as.character(y)]]$cv, Year = y)))
+ggplot(cvs, aes(pred, obs)) +
+  geom_point(alpha = 0.6) + geom_abline(colour = "firebrick") +
+  facet_wrap(~ Year, nrow = 1) + coord_equal() +
+  labs(x = "Leave-one-out prediction (mm)", y = "Observed (mm)",
+       title = "Cross-validation at the optimal p") +
+  theme_minimal()
+```
+
+*Figure 2: observed rainfall against the leave-one-out prediction at the optimal p. The red line is the line prediction = observation.*
+
+**Comment on Figure 2.** The points are spread around the red line, with a correlation between observation and prediction of `r round(get("cor")[1], 2)` in 1973, `r round(get("cor")[2], 2)` in 1974 and `r round(get("cor")[3], 2)` in 1980. The wettest stations (top 10 % of the observed values) are under-predicted, by `r round(-get("bias_hi")[1])`, `r round(-get("bias_hi")[2])` and `r round(-get("bias_hi")[3])` mm on average, and the driest ones (bottom 10 %) are over-predicted, by `r round(get("bias_lo")[1])`, `r round(get("bias_lo")[2])` and `r round(get("bias_lo")[3])` mm.
+
+The optimal values of $p$ are used in the next question to map the rainfall on the prediction grid.
+
+# Question 3: interpolation and map
+ 
+```{r}
+#| label: q3-maps
+#| fig-width: 15
+#| fig-height: 6
+#| column: page
+library(patchwork)
+
+interpolation_map <- function(data, p_opt, grid, year) {
+  fct_grid <- grid
+  fct_grid$pred <- idw(totanno ~ 1, locations = ~ XUTM + YUTM, data = data,
+                       newdata = grid, idp = p_opt, debug.level = 0)$var1.pred
+
+  ggplot() +
+    geom_point(data = fct_grid, aes(XUTM / 1000, YUTM / 1000, colour = pred), size = 1.5) +
+    geom_point(data = data, aes(XUTM / 1000, YUTM / 1000), shape = 4, size = 1) +
+    scale_colour_viridis_c(option = "C", name = "mm") +
+    coord_equal() +
+    labs(x = "X (km)", y = "Y (km)",
+         title = paste0(year, " (p = ", round(p_opt, 2), ")")) +
+    theme(legend.position = "bottom")
+}
+
+interpolation_map(subset(dati, anno == 1973), 3.125, grid, 1973) +
+interpolation_map(subset(dati, anno == 1974), 3.45,  grid, 1974) +
+interpolation_map(subset(dati, anno == 1980), 2.62,  grid, 1980) +
+  plot_annotation(title = "IDW prediction of annual rainfall",
+                  subtitle = "Crosses: stations")
+```

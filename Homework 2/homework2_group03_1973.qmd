@@ -1,0 +1,294 @@
+---
+title: "Homework 2"
+format: 
+  html : 
+    embed-resources: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+   load("../data/RainData.RData")
+
+library(ggplot2)
+library(gstat)
+library(sf)
+```
+
+# ANNO 1973
+
+## Weak prompt
+
+I wrote a weak prompt by only giving the instructions and some context
+about the data. For explanatory analysis, Claude Sonnet fitted a linear
+regression of the amount of rainfall on the the elevation, the latitude
+and the longitude, which doesn't make much sense. It also provided plots
+of rainfall with respect to latitude and longitude, that were giving
+interesting information but information that could have been better seen
+on a map. On top of that it didn't provide code for a semi-variogram
+which is essential for analyzing spatial dependence on continuous data.
+Other than that, the choice of p by cross-validation and the
+interpolation map are already quite good with the first prompt. With the
+second prompt Claude is giving indication on how to interpret the
+results, which is good.
+
+Other than that, the choice of p by cross-validation and the
+interpolation map are already quite good with the first prompt.
+
+## Good prompt
+
+> I work on a spatial data on rainfall and have measures from several
+> stations in Italy, I will only study the year 1973. Code in R in cells
+> that can be added in a quarto document. Follow these instructions : 1.
+> Run an exploratory data analysis on the rainfall itself. Analyze the
+> relationship between the amount of rain and the elevation. Do basic
+> bivariate analysis (scatter plot with a line corresponding to the
+> linear model, measure of correlation and hypothesis test). Also do a
+> map of the rainfall and a semi-variogram. 2. Using cross-validation,
+> choose the optimal value for p in the IDW estimator, with respect to
+> the MSE . 3. Using the IDW estimator and the optimal p, map the
+> variable of interest on the grid given prediction grid (which is
+> stored in gridXUTM and gridYUTM).
+>
+> Preferences: \* Use XUTM/YUTM for both stations and grid, in
+> EPSG:32632, with no reprojection. \* For each conclusion done let me a
+> way to assess the result
+>
+> Data \* dati73 is a data.frame with columns totanno (annual rainfall,
+> mm), Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM
+> (metres, EPSG:32632), and anno (year). It originally has 2373 rows
+> (about 190 stations over several years). I have already filtered it to
+> a single year, so it now has one row per station and no duplicated
+> coordinates. \* grid is a data.frame with columns XUTM and YUTM. It
+> has 1005 rows and is not a regular grid: every point has unique X and
+> Y values, with irregular spacing. Please plot it as points, not with
+> geom_tile/geom_raster.
+
+1.  **Exploratory data analysis**
+
+**1.1 Distribution of annual rainfall**
+
+```{r}
+#| label: eda-rain
+#| fig-height: 4
+#| 
+dati73 <- dati |> 
+  dplyr::filter(dati$anno == 1973)
+
+summary(dati73$totanno)
+cat("SD:", sd(dati73$totanno), "| CV:", sd(dati73$totanno) / mean(dati73$totanno), "\n")
+
+op <- par(mfrow = c(1, 2))
+hist(dati73$totanno, breaks = 20, col = "grey80", main = "Histogram", xlab = "Annual rainfall (mm)")
+boxplot(dati73$totanno, main = "Boxplot", ylab = "mm")
+par(op)
+
+```
+
+The annual rainfall ranges from 465 to 2758 with a mean and a median not
+very far one from the other (around 1200 mm). Let's analyze how is the
+rainfall linked to the elevation.
+
+**1.2 Rainfall vs elevation**
+
+```{r}
+#| label: rain-elev
+#| fig-height: 4.5
+ggplot(dati73, aes(Quota, totanno)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
+  labs(x = "Elevation (m)", y = "Annual rainfall (mm)",
+       title = "Rainfall vs elevation, 1973")
+
+# correlation measures and tests
+ct_p <- cor.test(dati73$Quota, dati73$totanno, method = "pearson")
+ct_p
+
+# simple linear model
+fit_lm <- lm(totanno ~ Quota, data = dati73)
+summary(fit_lm)
+confint(fit_lm)
+```
+
+A scatter plot shows a positive trend, which is confirmed with the
+Pearson's correlation test. The correlation is around 0.5. The
+F-statistic of linear model performed states that taking account the
+elevation improves the R squared. Both the intercept and the slope are
+statistically significants, with this time a slope reaching 0.7.
+
+```{r}
+#| label: lm-diagnostics
+#| fig-height: 5
+shapiro.test(residuals(fit_lm))
+
+# is there leftover spatial structure in the residuals?
+dati73$res_lm <- residuals(fit_lm)
+vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = dati73)
+plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+```
+
+The shapiro wilk test confirms the normality of the residuals of the
+regression, which is necessary for trusting the p-values. Though, as the
+semi-variogram of the the reiduals of the regression shows a variance
+growing with the distance, it should be kept in mind that elevation is
+not explaining all the spatial dependence.
+
+1.3 Map of the rainfall
+
+```{r}
+#| label: map-rain
+#| fig-height: 4
+ggplot(dati73, aes(XUTM, YUTM, colour = totanno)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1973")
+```
+
+A map of rainfall in the stations allows seeing a spatial dependence. It
+can be clearly seen that there is one zone with larger amounts of
+rainfall during year 1973. The coastal areas also seem to get less rain.
+
+1.4 Empirical semivariogram
+
+```{r}
+#| label: variogram-envelope
+#| fig-height: 4.5
+
+v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = dati73)
+v 
+# Monte Carlo envelope under spatial independence: permute the values over the stations
+set.seed(1973)
+nsim <- 99
+sims <- replicate(nsim, {
+  tmp <- dati73
+  tmp$totanno <- sample(tmp$totanno)
+  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
+            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
+})
+env <- data.frame(dist = v$dist, gamma = v$gamma,
+                  lo = apply(sims, 1, min, na.rm = TRUE),
+                  hi = apply(sims, 1, max, na.rm = TRUE))
+
+ggplot(env, aes(dist / 1000)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
+  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
+  labs(x = "Distance (km)", y = "Semivariance",
+       title = "Empirical semivariogram vs envelope under no spatial correlation")
+```
+
+There are observed points below the ribbon at short lags, this means
+that nearby stations are more similar than chance allows, so there is
+positive spatial correlation. This is the typical, expected pattern for
+rainfall.
+
+2.  Choice of p
+
+    Now, let's do choose p for the IDW. The IDW estimator at point $s_0$
+    is
+
+$$\hat z(s_0)=\frac{\sum_i d(s_0,s_i)^{-p} z(s_i)}{\sum_i d(s_0,s_i)^{-p}}.$$
+
+For each station $i$ I remove it, predict it from the other $n-1$, and
+compute $\mathrm{MSE}(p)=\frac1n\sum_i(z_i-\hat z_{-i})^2$.
+
+```{r}
+#| label: idw-cv-1973-good
+#| fig-height: 4.5
+X <- cbind(dati73$XUTM, dati73$YUTM)
+z <- dati73$totanno
+n <- length(z)
+D <- as.matrix(dist(X))
+diag(D) <- Inf                       # leave-one-out: a station never predicts itself
+
+cv_mse <- function(p) {
+  W <- 1 / D^p                       # Inf^p = Inf -> weight 0 on the diagonal
+  pred <- as.vector(W %*% z) / rowSums(W)
+  mean((z - pred)^2)
+}
+
+p_grid <- seq(0.25, 8, by = 0.25)
+cv <- data.frame(p = p_grid, MSE = sapply(p_grid, cv_mse))
+
+# refine around the minimum of the coarse grid
+p0 <- cv$p[which.min(cv$MSE)]
+opt <- optimize(cv_mse, interval = c(max(0.01, p0 - 0.25), p0 + 0.25))
+p_opt <- opt$minimum
+cat("Optimal p:", round(p_opt, 3), "| CV MSE:", round(opt$objective, 1),
+    "| CV RMSE:", round(sqrt(opt$objective), 1), "mm\n")
+
+ggplot(cv, aes(p, MSE)) +
+  geom_line() + geom_point(size = 1) +
+  geom_vline(xintercept = p_opt, linetype = 2, colour = "firebrick") +
+  geom_hline(yintercept = var(z) * n / (n - 1)^2 * n, linetype = 3, colour = "grey40") +
+  labs(title = "Leave-one-out MSE as a function of p",
+       subtitle = "Dashed red: optimal p. Dotted grey: MSE of predicting each station with the mean of the others")
+```
+
+The value of p that minimizes the MSE is 3.125, this is the value that
+is kept for the interpolation.
+
+```{r}
+#| label: idw-cv-check
+#| fig-height: 4.5
+# observed vs predicted at p_opt
+W <- 1 / D^p_opt
+cv_pred <- as.vector(W %*% z) / rowSums(W)
+
+ggplot(data.frame(obs = z, pred = cv_pred), aes(pred, obs)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, colour = "firebrick") +
+  coord_equal() +
+  labs(x = "LOO prediction (mm)", y = "Observed (mm)", title = "Cross-validation at the optimal p")
+
+# skill with respect to the trivial predictor (mean of the other stations)
+mse_mean <- mean((z - (sum(z) - z) / (n - 1))^2)
+cat("MSE IDW:", round(opt$objective, 1), "| MSE mean-of-others:", round(mse_mean, 1),
+    "| relative skill:", round(1 - opt$objective / mse_mean, 3), "\n")
+cat("Correlation obs vs LOO prediction:", round(cor(z, cv_pred), 3), "\n")
+```
+
+The relative skill of 0.5 states that IDW do better than the mean in
+terms of prediction. The plot shows that some points do not look like
+their neighbors (the points far away from the red line) but that the IDW
+predicts globally not that bad (a majority of points is in the
+bottom-left or top-right areas.
+
+3.  IDW map on the prediction grid
+
+```{r}
+#| label: idw-grid
+#| fig-height: 6.5
+idw_predict <- function(x0, y0, x, y, z, p) {
+  d <- sqrt(outer(x0, x, "-")^2 + outer(y0, y, "-")^2)
+  d[d < 1e-6] <- 1e-6                # a grid point on a station returns (almost exactly) that station's value
+  W <- 1 / d^p
+  as.vector(W %*% z) / rowSums(W)
+}
+
+grid$pred <- idw_predict(grid$XUTM, grid$YUTM, dati73$XUTM, dati73$YUTM, dati73$totanno, p_opt)
+
+# distance of each grid point to the nearest station (for diagnostics)
+grid$d_nn <- apply(sqrt(outer(grid$XUTM, dati73$XUTM, "-")^2 + outer(grid$YUTM, dati73$YUTM, "-")^2), 1, min)
+
+ggplot() +
+  geom_point(data = grid, aes(XUTM, YUTM, colour = pred), size = 2.5) +
+  geom_point(data = dati73, aes(XUTM, YUTM), shape = 4, colour = "black", size = 1) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)",
+       title = paste0("IDW prediction of annual rainfall, 1973 (p = ", round(p_opt, 2), ")"),
+       subtitle = "Black crosses: stations")
+
+ggplot()+
+  geom_point(data= grid, aes(XUTM, YUTM, colour = Quota), size = 2.5) +
+  scale_colour_viridis_c(option = "C", name = "mm") +
+  coord_equal() +
+  labs(x = "XUTM (m)", y = "YUTM (m)",
+       title = "Elevation ")
+```
+
+The mountainous regions in the south of the area understudy are
+receiving a lot of rain compared to the coastal regions. However the
+mountainous regions at the north are not receiving little water.
