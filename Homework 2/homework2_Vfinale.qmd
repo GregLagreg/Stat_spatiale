@@ -1,5 +1,5 @@
 ---
-title: "Homework 2 – Question 2"
+title: "Homework 2"
 format:
   html:
     toc: true
@@ -11,6 +11,7 @@ execute:
 
 ```{r}
 #| label: setup
+#| echo : false
 library(ggplot2)
 library(gstat)
 load("../data/RainData.RData")   # data.frame `dati` (stations of all years) and `grid`
@@ -54,6 +55,7 @@ get <- function(f) sapply(q2, `[[`, f)
 
 ```{r}
 #| label: q2-table
+#| code-fold: true
 q2_tab <- data.frame(
   Year = years,
   Stations = get("n"),
@@ -73,6 +75,8 @@ The table gives, for each year, the number of stations, the optimal $p$, the ran
 #| label: q2-curves
 #| fig-width: 12
 #| fig-height: 3.8
+#| code-fold: true
+
 curves <- do.call(rbind, lapply(years, function(y) cbind(q2[[as.character(y)]]$curve, Year = y)))
 marks  <- data.frame(Year = years, p_opt = get("p_opt"), ref = get("ref"))
 ggplot(curves, aes(p, RMSE)) +
@@ -94,6 +98,7 @@ ggplot(curves, aes(p, RMSE)) +
 #| label: q2-obs-pred
 #| fig-width: 12
 #| fig-height: 3.8
+#| code-fold: true
 cvs <- do.call(rbind, lapply(years, function(y) cbind(q2[[as.character(y)]]$cv, Year = y)))
 ggplot(cvs, aes(pred, obs)) +
   geom_point(alpha = 0.6) + geom_abline(colour = "firebrick") +
@@ -111,11 +116,13 @@ The optimal values of $p$ are used in the next question to map the rainfall on t
 
 # Question 3: interpolation and map
  
+The goal of interpolation is to use the measurements in the few stations available to predict the values in places where there is no measurements stations. Instead of predicting continuous values on all the region understudy, which is impossible, we predict values of a grid of 1005 points covering the region. Here is maps of the results for the 3 years:  
 ```{r}
 #| label: q3-maps
-#| fig-width: 15
+#| fig-width: 7
 #| fig-height: 6
 #| column: page
+#| code-fold: true
 library(patchwork)
 
 interpolation_map <- function(data, p_opt, grid, year) {
@@ -139,3 +146,23 @@ interpolation_map(subset(dati, anno == 1980), 2.62,  grid, 1980) +
   plot_annotation(title = "IDW prediction of annual rainfall",
                   subtitle = "Crosses: stations")
 ```
+The map is smooth and follows the stations: the high values are around
+the groups of stations with a lot of rain, and the low values in the
+zones where stations have little rain. Around each station, the
+prediction is close to its measure. During year 1973, the amount of rainfall is mostly important in the center of Calabria. In the two other years the amount of rainfall is important for all the mountainous regions, even in the north.
+
+```{r}
+#| label: coverage
+#| code-fold: true
+grid$d_nn <- apply(sqrt(outer(grid$XUTM, subset(dati, anno == 1973)$XUTM, "-")^2 + outer(grid$YUTM, subset(dati, anno == 1973)$YUTM, "-")^2), 1, min) / 1000
+summary(grid$d_nn)                              # distance (km) to the nearest station
+mean(grid$Quota > max(subset(dati, anno == 1973)$Quota))               # share of grid points higher than the highest station
+```
+
+The first output is the distance (in km) between each grid point and the
+nearest station: it is 5.7 km for half of the points, but it goes up to
+46 km for a few of them. In these places the map is only an extension of
+far stations and is less reliable. The last number says that 3 % of the
+grid points are higher than the highest station, and IDW never predicts
+values outside the range of the observed rainfall: the highest places
+are probably under-estimated.
