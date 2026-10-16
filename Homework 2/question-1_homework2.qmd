@@ -48,6 +48,8 @@ par(op)
 
 ```
 
+Comparative Exploratory Analysis of Annual Rainfall (1973, 1974, and 1980): The exploratory analysis of annual rainfall (totanno) across 1973, 1974, and 1980 reveals a consistent positively skewed distribution across all three periods, as evidenced by the right-tailed histograms, elevated upper whiskers, and the systematic presence of high-rainfall outliers (\> 2100 mm). Despite this structural similarity, typically driven by orographic effects at higher-elevation stations, notable inter-annual variations are observed in both central tendency and dispersion. Specifically, 1973 represents the wettest year overall, characterized by the highest median (\~1150–1200 mm) and the broadest interquartile range (\~850–1600 mm), reflecting a high proportion of stations receiving between 1300 mm and 1900 mm. Conversely, 1974 exhibits a marked downward shift toward drier conditions, with the primary frequency peak dropping to 700–800 mm, a lower median (\~1000 mm), and a more compact interquartile spread (\~650–1300 mm). Finally, 1980 displays an intermediate central tendency (median near 1000 mm) but stands out for having the widest overall range (spanning from \~250 mm to nearly 3000 mm), highlighting stronger spatial contrasts between dry lowland stations and extreme wet outliers.
+
 **1.2 Rainfall vs elevation**
 
 ```{r}
@@ -110,39 +112,108 @@ confint(fit_lm)
 #| fig-height: 5
 
 # 1973
-
 fit_lm <- lm(totanno ~ Quota, data = dati73)
+summary(fit_lm)
 
 shapiro.test(residuals(fit_lm))
 
-# is there leftover spatial structure in the residuals?
 dati73$res_lm <- residuals(fit_lm)
 vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = dati73)
-plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+
+set.seed(123)
+nsim <- 99
+cutoff_val <- max(vr$dist) * 1.0001
+width_val <- cutoff_val / nrow(vr)
+
+sim_gamma <- replicate(nsim, {
+  dati73$res_perm <- sample(dati73$res_lm)
+  vr_perm <- variogram(res_perm ~ 1, locations = ~ XUTM + YUTM, data = dati73, 
+                       cutoff = cutoff_val, width = width_val)
+  vr_perm$gamma[1:nrow(vr)]
+})
+
+env_low <- apply(sim_gamma, 1, min, na.rm = TRUE)
+env_high <- apply(sim_gamma, 1, max, na.rm = TRUE)
+
+plot(vr$dist, vr$gamma,
+     ylim = range(c(vr$gamma, env_low, env_high), na.rm = TRUE),
+     pch = 19, col = "black",
+     xlab = "Distance", ylab = "Semivariance",
+     main = "Semivariogram of the residuals (totanno ~ Quota) with MC Envelope")
+lines(vr$dist, vr$gamma, col = "black", lwd = 1.5)
+lines(vr$dist, env_low, lty = 2, col = "red", lwd = 1.5)
+lines(vr$dist, env_high, lty = 2, col = "red", lwd = 1.5)
 
 
 # 1974
 
 fit_lm <- lm(totanno ~ Quota, data = data_1974)
+summary(fit_lm)
 
 shapiro.test(residuals(fit_lm))
 
-# is there leftover spatial structure in the residuals?
 data_1974$res_lm <- residuals(fit_lm)
 vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = data_1974)
-plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+
+set.seed(123)
+nsim <- 99
+cutoff_val <- max(vr$dist) * 1.0001
+width_val <- cutoff_val / nrow(vr)
+
+sim_gamma <- replicate(nsim, {
+  data_1974$res_perm <- sample(data_1974$res_lm)
+  vr_perm <- variogram(res_perm ~ 1, locations = ~ XUTM + YUTM, data = data_1974, 
+                       cutoff = cutoff_val, width = width_val)
+  vr_perm$gamma[1:nrow(vr)]
+})
+
+env_low <- apply(sim_gamma, 1, min, na.rm = TRUE)
+env_high <- apply(sim_gamma, 1, max, na.rm = TRUE)
+
+plot(vr$dist, vr$gamma,
+     ylim = range(c(vr$gamma, env_low, env_high), na.rm = TRUE),
+     pch = 19, col = "black",
+     xlab = "Distance", ylab = "Semivariance",
+     main = "Semivariogram of the residuals (totanno ~ Quota) with MC Envelope")
+lines(vr$dist, vr$gamma, col = "black", lwd = 1.5)
+lines(vr$dist, env_low, lty = 2, col = "red", lwd = 1.5)
+lines(vr$dist, env_high, lty = 2, col = "red", lwd = 1.5)
 
 
 # 1980
 
 fit_lm <- lm(totanno ~ Quota, data = data_1980)
+summary(fit_lm)
 
 shapiro.test(residuals(fit_lm))
 
-# is there leftover spatial structure in the residuals?
 data_1980$res_lm <- residuals(fit_lm)
 vr <- variogram(res_lm ~ 1, locations = ~ XUTM + YUTM, data = data_1980)
-plot(vr, main = "Semivariogram of the residuals of totanno ~ Quota")
+
+set.seed(123)
+nsim <- 99
+cutoff_val <- max(vr$dist) * 1.0001
+width_val <- cutoff_val / nrow(vr)
+
+sim_gamma <- replicate(nsim, {
+  data_1980$res_perm <- sample(data_1980$res_lm)
+  vr_perm <- variogram(res_perm ~ 1, locations = ~ XUTM + YUTM, data = data_1980, 
+                       cutoff = cutoff_val, width = width_val)
+  vr_perm$gamma[1:nrow(vr)]
+})
+
+env_low <- apply(sim_gamma, 1, min, na.rm = TRUE)
+env_high <- apply(sim_gamma, 1, max, na.rm = TRUE)
+
+plot(vr$dist, vr$gamma,
+     ylim = range(c(vr$gamma, env_low, env_high), na.rm = TRUE),
+     pch = 19, col = "black",
+     xlab = "Distance", ylab = "Semivariance",
+     main = "Semivariogram of the residuals (totanno ~ Quota) with MC Envelope")
+lines(vr$dist, vr$gamma, col = "black", lwd = 1.5)
+lines(vr$dist, env_low, lty = 2, col = "red", lwd = 1.5)
+lines(vr$dist, env_high, lty = 2, col = "red", lwd = 1.5)
+
 ```
 
 **1.3 Map of the rainfall**
@@ -174,88 +245,3 @@ ggplot(data_1980, aes(XUTM, YUTM, colour = totanno)) +
   labs(x = "XUTM (m)", y = "YUTM (m)", title = "Annual rainfall by station, 1980")
 
 ```
-**1.4 Empirical semivariogram**
-
-```{r}
-#| label: variogram-envelope
-#| fig-height: 4.5
-
-# 1973
-
-v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = dati73)
-v 
-# Monte Carlo envelope under spatial independence: permute the values over the stations
-set.seed(1973)
-nsim <- 99
-sims <- replicate(nsim, {
-  tmp <- dati73
-  tmp$totanno <- sample(tmp$totanno)
-  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
-            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
-})
-env <- data.frame(dist = v$dist, gamma = v$gamma,
-                  lo = apply(sims, 1, min, na.rm = TRUE),
-                  hi = apply(sims, 1, max, na.rm = TRUE))
-
-ggplot(env, aes(dist / 1000)) +
-  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
-  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
-  labs(x = "Distance (km)", y = "Semivariance",
-       title = "Empirical semivariogram vs envelope under no spatial correlation; 1973")
-
-# 1974
-
-v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = data_1974)
-v 
-# Monte Carlo envelope under spatial independence: permute the values over the stations
-set.seed(1974)
-nsim <- 99
-sims <- replicate(nsim, {
-  tmp <- dati73
-  tmp$totanno <- sample(tmp$totanno)
-  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
-            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
-})
-env <- data.frame(dist = v$dist, gamma = v$gamma,
-                  lo = apply(sims, 1, min, na.rm = TRUE),
-                  hi = apply(sims, 1, max, na.rm = TRUE))
-
-ggplot(env, aes(dist / 1000)) +
-  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
-  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
-  labs(x = "Distance (km)", y = "Semivariance",
-       title = "Empirical semivariogram vs envelope under no spatial correlation; 1974")
-
-
-# 1980
-
-
-v <- variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = data_1980)
-v 
-# Monte Carlo envelope under spatial independence: permute the values over the stations
-set.seed(1980)
-nsim <- 99
-sims <- replicate(nsim, {
-  tmp <- dati73
-  tmp$totanno <- sample(tmp$totanno)
-  variogram(totanno ~ 1, locations = ~ XUTM + YUTM, data = tmp,
-            cutoff = max(v$dist) / 0.95 * 0.95, width = v$dist[2] - v$dist[1])$gamma[seq_len(nrow(v))]
-})
-env <- data.frame(dist = v$dist, gamma = v$gamma,
-                  lo = apply(sims, 1, min, na.rm = TRUE),
-                  hi = apply(sims, 1, max, na.rm = TRUE))
-
-ggplot(env, aes(dist / 1000)) +
-  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80") +
-  geom_point(aes(y = gamma)) + geom_line(aes(y = gamma)) +
-  labs(x = "Distance (km)", y = "Semivariance",
-       title = "Empirical semivariogram vs envelope under no spatial correlation; 1980")
-
-
-```
-
-
-
-
-
-
