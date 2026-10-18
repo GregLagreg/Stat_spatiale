@@ -60,6 +60,9 @@ Comparative Exploratory Analysis of Annual Rainfall (1973, 1974, and 1980): The 
 #| fig-height: 4
 
 # 1973
+
+data_1973 <- dati |> 
+  dplyr::filter(anno == 1973)
 ggplot(data_1973, aes(Quota, totanno)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
@@ -77,6 +80,8 @@ confint(fit_lm)
 
 # 1974
 
+data_1974 <- dati |> 
+  dplyr::filter(anno == 1974)
 ggplot(data_1974, aes(Quota, totanno)) +
   geom_point(alpha = 0.7) +
   geom_smooth(method = "lm", se = TRUE, colour = "firebrick") +
@@ -93,6 +98,9 @@ summary(fit_lm)
 confint(fit_lm)
 
 # 1980
+
+data_1980 <- dati |> 
+  dplyr::filter(anno == 1980)
 
 ggplot(data_1980, aes(Quota, totanno)) +
   geom_point(alpha = 0.7) +
