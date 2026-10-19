@@ -4,6 +4,7 @@ format:
   html:
     toc: true
     embed-resources: true
+    code-fold: true
 execute:
   warning: false
   message: false
@@ -15,6 +16,55 @@ library(ggplot2)
 library(gstat)
 load("../data/RainData.RData")   # data.frame `dati` (stations of all years) and `grid`
 ```
+
+## Weak prompt
+
+I wrote a weak prompt by only giving the instructions and some context
+about the data. For explanatory analysis, Claude Sonnet fitted a linear
+regression of the amount of rainfall on the the elevation, the latitude
+and the longitude, which doesn't make much sense. It also provided plots
+of rainfall with respect to latitude and longitude, that were giving
+interesting information but information that could have been better seen
+on a map. On top of that it didn't provide code for a semi-variogram
+which is essential for analyzing spatial dependence on continuous data.
+Other than that, the choice of p by cross-validation and the
+interpolation map are already quite good with the first prompt. With the
+second prompt Claude is giving indication on how to interpret the
+results, which is good.
+
+Other than that, the choice of p by cross-validation and the
+interpolation map are already quite good with the first prompt.
+
+## Good prompt
+
+> I work on a spatial data on rainfall and have measures from several
+> stations in Italy, I will only study the year 1973. Code in R in cells
+> that can be added in a quarto document. Follow these instructions : 1.
+> Run an exploratory data analysis on the rainfall itself. Analyze the
+> relationship between the amount of rain and the elevation. Do basic
+> bivariate analysis (scatter plot with a line corresponding to the
+> linear model, measure of correlation and hypothesis test). Also do a
+> map of the rainfall and a semi-variogram. 2. Using cross-validation,
+> choose the optimal value for p in the IDW estimator, with respect to
+> the MSE . 3. Using the IDW estimator and the optimal p, map the
+> variable of interest on the grid given prediction grid (which is
+> stored in gridXUTM and gridYUTM).
+>
+> Preferences: \* Use XUTM/YUTM for both stations and grid, in
+> EPSG:32632, with no reprojection. \* For each conclusion done let me a
+> way to assess the result
+>
+> Data \* dati73 is a data.frame with columns totanno (annual rainfall,
+> mm), Quota (elevation, m), Lat10/Lon10 (WGS84 degrees), XUTM/YUTM
+> (metres, EPSG:32632), and anno (year). It originally has 2373 rows
+> (about 190 stations over several years). I have already filtered it to
+> a single year, so it now has one row per station and no duplicated
+> coordinates. \* grid is a data.frame with columns XUTM and YUTM. It
+> has 1005 rows and is not a regular grid: every point has unique X and
+> Y values, with irregular spacing. Please plot it as points, not with
+> geom_tile/geom_raster.
+
+The AI was also useful to correct some code issues, for instance modifying the maps so they have a common scale.
 
 ## Question 1
 
@@ -367,7 +417,7 @@ The optimal values of $p$ are used in the next question to map the rainfall on t
 #| column: page
 library(patchwork)
 
-interpolation_map <- function(data, p_opt, grid, year) {
+interpolation_map <- function(data, p_opt, grid, year, limits = NULL) {
   fct_grid <- grid
   fct_grid$pred <- idw(totanno ~ 1, locations = ~ XUTM + YUTM, data = data,
                        newdata = grid, idp = p_opt, debug.level = 0)$var1.pred
@@ -375,16 +425,27 @@ interpolation_map <- function(data, p_opt, grid, year) {
   ggplot() +
     geom_point(data = fct_grid, aes(XUTM / 1000, YUTM / 1000, colour = pred), size = 1.5) +
     geom_point(data = data, aes(XUTM / 1000, YUTM / 1000), shape = 4, size = 1) +
-    scale_colour_viridis_c(option = "C", name = "mm") +
+    scale_colour_viridis_c(option = "C", name = "mm", limits = limits) +
     coord_equal() +
     labs(x = "X (km)", y = "Y (km)",
          title = paste0(year, " (p = ", round(p_opt, 2), ")")) +
     theme(legend.position = "bottom")
 }
 
-interpolation_map(subset(dati, anno == 1973), 3.125, grid, 1973) +
-interpolation_map(subset(dati, anno == 1974), 3.45,  grid, 1974) +
-interpolation_map(subset(dati, anno == 1980), 2.62,  grid, 1980) +
+params <- list(c(1973, 3.125), c(1974, 3.45), c(1980, 2.62))
+
+all_pred <- unlist(lapply(params, function(x) {
+  idw(totanno ~ 1, locations = ~ XUTM + YUTM,
+      data = subset(dati, anno == x[1]),
+      newdata = grid, idp = x[2], debug.level = 0)$var1.pred
+}))
+lims <- range(all_pred, na.rm = TRUE)
+
+interpolation_map(subset(dati, anno == 1973), 3.125, grid, 1973, lims) +
+interpolation_map(subset(dati, anno == 1974), 3.45,  grid, 1974, lims) +
+interpolation_map(subset(dati, anno == 1980), 2.62,  grid, 1980, lims) +
+  plot_layout(guides = "collect") +
   plot_annotation(title = "IDW prediction of annual rainfall",
-                  subtitle = "Crosses: stations")
+                  subtitle = "Crosses: stations") &
+  theme(legend.position = "bottom")
 ```
