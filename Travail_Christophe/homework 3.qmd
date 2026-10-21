@@ -307,6 +307,7 @@ par(mfrow = c(1, 1))
 # COMPLETE GEOSTATISTICAL FITTING ALGORITHM
 # 1. Calculates the real empirical variogram using gstat
 # 2. Fits the 5 theoretical models by minimizing the absolute error integral
+# 3. Plots the empirical points vs the best theoretical curve for ALL 5 models
 # ==============================================================================
 
 # Load required libraries
@@ -325,23 +326,6 @@ cat("1. Calculating empirical variogram from real data...\n")
 dataset_sf <- st_as_sf(dati, coords = c("XUTM", "YUTM"), crs = 32632)
 formule <- as.formula(paste("totanno", "~ 1"))
 vario_exp <- variogram(formule, data = dataset_sf)
-
-# Plot the empirical variogram using your ggplot2 code
-p <- ggplot(vario_exp, aes(x = dist, y = gamma)) +
-  geom_point(color = "#2c3e50", size = 3) +
-  geom_line(color = "#3498db", linetype = "dashed", alpha = 0.6) +
-  labs(
-    title = "Empirical Variogram",
-    subtitle = paste("Evolution of the spatial variance for:", "totanno"),
-    x = "Distance",
-    y = "Semi-variance (Gamma)"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(face = "bold"),
-    panel.grid.minor = element_blank()
-  )
-print(p)
 
 # Extract the empirical data needed for the fitting algorithm
 empirical_data <- data.frame(h = vario_exp$dist, gamma = vario_exp$gamma)
@@ -402,20 +386,14 @@ param_grid_kappa <- expand.grid(sigma2 = sigma2_seq,
 
 find_best_model_integral <- function(cov_func, emp_data, grid, model_name) {
   
-  # Create a continuous function from the empirical points
   continuous_emp_gamma <- approxfun(emp_data$h, emp_data$gamma, rule = 2)
-  
-  # Define a fine grid for numerical integration
   fine_h <- seq(min(emp_data$h), max(emp_data$h), length.out = 1000)
   dh <- diff(fine_h)[1] 
   
-  # Evaluate empirical curve on the fine grid once
   fine_emp_values <- continuous_emp_gamma(fine_h)
-  
   scores <- numeric(nrow(grid))
   has_kappa <- "kappa" %in% names(grid)
   
-  # Loop over all combinations
   for(i in 1:nrow(grid)) {
     params <- grid[i, ]
     
@@ -432,14 +410,10 @@ find_best_model_integral <- function(cov_func, emp_data, grid, model_name) {
                                          nugget = params$nugget)
     }
     
-    # Absolute difference
     abs_diff <- abs(fine_emp_values - fine_theo_values)
-    
-    # Trapezoidal rule for integration
     scores[i] <- sum((abs_diff[-1] + abs_diff[-length(abs_diff)]) / 2 * dh)
   }
   
-  # Identify the best combination
   best_index <- which.min(scores)
   best_params <- grid[best_index, ]
   best_score <- scores[best_index]
@@ -488,70 +462,70 @@ print(results_summary, row.names = FALSE)
 cat(sprintf("\n=> The absolute best fitting model is '%s' with an error score of %.2f\n", 
             results_summary$Model[1], results_summary$Score_Error[1]))
 
-
-
 # ==============================================================================
-# STEP 6: PLOT EMPIRICAL DATA VS BEST THEORETICAL MODEL
+# STEP 6: PLOT EMPIRICAL DATA VS ALL 5 BEST THEORETICAL MODELS
 # ==============================================================================
 
-cat("\n3. Generating final comparison plot...\n")
+cat("\n3. Generating final comparison plot for all 5 models...\n")
 
-# Get the best model's name and parameters
-best_model_name <- results_summary$Model[1]
-best_sigma2 <- results_summary$Sigma2[1]
-best_phi <- results_summary$Phi[1]
-best_nugget <- results_summary$Nugget[1]
-best_kappa <- results_summary$Kappa[1]
-
-# Map the winning model string back to its corresponding covariance function
-best_cov_func <- switch(best_model_name,
-                        "Spherical" = spherical_cov,
-                        "Powered Exponential" = powered_exponential_cov,
-                        "Rational Quadratic" = rational_quadratic_cov,
-                        "Wave" = wave_cov,
-                        "Matern" = matern_cov)
-
-# Create a sequence of distances to draw a smooth theoretical curve
+# Create a sequence of distances to draw smooth theoretical curves
 h_theo <- seq(0, max(empirical_data$h) * 1.1, length.out = 500)
 
-# Calculate the theoretical gamma values
-if (is.na(best_kappa)) {
-  gamma_theo <- semi_variogram(best_cov_func, h_theo, sigma2 = best_sigma2, phi = best_phi, nugget = best_nugget)
-} else {
-  gamma_theo <- semi_variogram(best_cov_func, h_theo, sigma2 = best_sigma2, phi = best_phi, nugget = best_nugget, kappa = best_kappa)
+# Initialize an empty data frame to store all theoretical curves
+all_theoretical_data <- data.frame()
+
+# Loop through each model in the summary to generate its theoretical curve
+for (i in 1:nrow(results_summary)) {
+  m_name   <- results_summary$Model[i]
+  m_sigma2 <- results_summary$Sigma2[i]
+  m_phi    <- results_summary$Phi[i]
+  m_nugget <- results_summary$Nugget[i]
+  m_kappa  <- results_summary$Kappa[i]
+  
+  # Map model name to covariance function
+  m_cov_func <- switch(m_name,
+                       "Spherical" = spherical_cov,
+                       "Powered Exponential" = powered_exponential_cov,
+                       "Rational Quadratic" = rational_quadratic_cov,
+                       "Wave" = wave_cov,
+                       "Matern" = matern_cov)
+  
+  # Calculate theoretical gamma values
+  if (is.na(m_kappa)) {
+    gamma_theo <- semi_variogram(m_cov_func, h_theo, sigma2 = m_sigma2, phi = m_phi, nugget = m_nugget)
+  } else {
+    gamma_theo <- semi_variogram(m_cov_func, h_theo, sigma2 = m_sigma2, phi = m_phi, nugget = m_nugget, kappa = m_kappa)
+  }
+  
+  # Append to the combined data frame
+  temp_df <- data.frame(h = h_theo, gamma = gamma_theo, Model = m_name)
+  all_theoretical_data <- rbind(all_theoretical_data, temp_df)
 }
 
-theoretical_data <- data.frame(h = h_theo, gamma = gamma_theo)
-
-# Build the subtitle text dynamically
-subtitle_text <- sprintf("Best Fit: %s Model | Sigma2: %d | Phi: %d | Nugget: %d", 
-                         best_model_name, best_sigma2, best_phi, best_nugget)
-if (!is.na(best_kappa)) subtitle_text <- paste(subtitle_text, sprintf("| Kappa: %.1f", best_kappa))
-
 # Plot with ggplot2
-final_plot <- ggplot() +
-  # Empirical points
-  geom_point(data = empirical_data, aes(x = h, y = gamma, color = "Empirical Data"), size = 3.5, shape = 16) +
-  # Theoretical smooth curve
-  geom_line(data = theoretical_data, aes(x = h, y = gamma, color = "Theoretical Model"), linewidth = 1.2) +
-  # Legend and colors
-  scale_color_manual(name = "", values = c("Empirical Data" = "#2c3e50", "Theoretical Model" = "#e74c3c")) +
-  # Labels
+final_plot_all <- ggplot() +
+  # Empirical points (Black dots)
+  geom_point(data = empirical_data, aes(x = h, y = gamma), color = "#2c3e50", size = 3, shape = 16) +
+  # Theoretical smooth curves colored by model
+  geom_line(data = all_theoretical_data, aes(x = h, y = gamma, color = Model), linewidth = 1) +
+  # Labels and Title
   labs(
-    title = "Empirical Variogram vs Best Theoretical Fit",
-    subtitle = subtitle_text,
+    title = "Empirical Variogram vs Best Fit for ALL 5 Models",
+    subtitle = "Comparison of the optimal parameter combinations for each theoretical model",
     x = "Distance",
-    y = "Semi-variance (Gamma)"
+    y = "Semi-variance (Gamma)",
+    color = "Theoretical Models"
   ) +
+  # Use a nice color palette for the 5 lines
+  scale_color_brewer(palette = "Set1") +
   # Theme and styling
   theme_minimal() +
   theme(
     plot.title = element_text(face = "bold", size = 14),
-    plot.subtitle = element_text(color = "#555555", size = 11),
-    legend.position = "bottom",
-    legend.text = element_text(size = 11),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
     panel.grid.minor = element_blank()
   )
 
-print(final_plot)
+print(final_plot_all)
 ```
