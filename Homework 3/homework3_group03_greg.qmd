@@ -1,0 +1,233 @@
+---
+title: "Homework 3"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(geoR); library(sf)
+data(wolfcamp)
+coords <- wolfcamp$coords
+z      <- wolfcamp$data
+n      <- length(z)
+md     <- 0.5 * max(dist(coords))      # maximum distance for the variograms
+```
+
+We work again with the Wolfcamp data (`r n` measurements of the water level of an aquifer in Texas). We use the geostatistical model of the course:
+
+$$Z(s) = X(s)\beta + W(s) + \varepsilon(s)$$
+
+where $X(s)\beta$ is the trend, $W(s)$ is a Gaussian process with variance $\sigma^2$ and range parameter $\phi$, and $\varepsilon(s)$ is the nugget, with variance $\tau^2$. All the parameters are estimated by maximum likelihood. In Part 1 we choose the trend and the covariance model, and in Part 2 we use this model for kriging.
+
+# AI prompt
+
+As in the previous homeworks, we gave the AI the data, the method we wanted and the checks to do.
+
+> I'm a student in spatial statistics. I have the wolfcamp data from geoR in R (85 measurements of water level, geostatistical data) and I need to: 1) choose a variogram model and justify the choice, 2) do kriging in the likelihood framework. I think there is a trend in the coordinates, so first compare a constant, linear and quadratic trend with likfit (ML) and AIC. Then with the chosen trend, fit some covariance models (exponential, spherical, gaussian, matern with a few kappa) by ML with a nugget, compare them with AIC and plot them on the empirical variogram of the residuals. Then do universal kriging with krige.conv on a grid (only inside the area of the data), map the prediction and the standard deviation, and check it with leave-one-out cross-validation (RMSE compared to a simple mean, and standardised errors). Give the R code in chunks for Quarto and explain each result simply, without over-interpreting.
+
+**Answer.** Here is the analysis asked for by this prompt.
+
+# Part 1: choice of the variogram model
+
+## Trend
+
+The trend and the covariance are estimated together, so we first choose the trend. To compare trends we must use maximum likelihood (ML) and not REML: the REML likelihood changes with the trend, so it cannot compare two different trends. For this step we use an exponential covariance.
+
+```{r}
+#| label: trend
+# ML fit of a model. likfit is run from 3 starting values (based on the variance of the
+# residuals of the trend) and the fit with the highest likelihood is kept.
+fit_ml <- function(cov.model, trend = "1st", kappa = 0.5, lik.method = "ML") {
+  s2     <- var(residuals(lm(z ~ trend.spatial(trend, wolfcamp) - 1)))
+  starts <- list(c(s2, 0.1 * md), c(s2, 0.3 * md), c(0.5 * s2, 0.6 * md))
+  fits   <- lapply(starts, function(st) tryCatch(
+    likfit(wolfcamp, trend = trend, cov.model = cov.model, kappa = kappa,
+           ini.cov.pars = st, nugget = 0.1 * s2, lik.method = lik.method, messages = FALSE),
+    error = function(e) e))
+  ok <- !sapply(fits, inherits, "error")
+  if (!any(ok)) stop(conditionMessage(fits[[1]]))
+  fits <- fits[ok]
+  fits[[which.max(sapply(fits, function(f) f$loglik))]]
+}
+
+trends <- c("cte", "1st", "2nd")
+n_beta <- c(cte = 1, "1st" = 3, "2nd" = 6)                 # number of trend coefficients
+fit_tr <- lapply(trends, function(t) fit_ml("exponential", t))
+
+tab_tr <- data.frame(Trend  = c("constant", "linear", "quadratic"),
+                     logLik = sapply(fit_tr, function(f) f$loglik))
+tab_tr$AIC        <- -2 * tab_tr$logLik + 2 * (n_beta + 3)    # + sigma2, phi, tau2
+tab_tr$`Delta AIC` <- tab_tr$AIC - min(tab_tr$AIC)
+knitr::kable(tab_tr, digits = 1, row.names = FALSE)
+
+trend_best <- trends[which.min(tab_tr$AIC)]
+trend_name <- tab_tr$Trend[which.min(tab_tr$AIC)]
+```
+
+The AIC is smallest for the **`r trend_name`** trend, so we keep it in the rest of the homework.
+
+## Empirical variogram of the residuals
+
+```{r}
+#| label: variogram
+v_res <- variog(wolfcamp, trend = trend_best, max.dist = md, messages = FALSE)
+plot(v_res, main = "Empirical variogram of the residuals")
+```
+
+*Variogram of what is left after removing the trend. It starts above 0, which shows a nugget, and it is used to compare the fitted models below.*
+
+## Candidate covariance models
+
+We fit five models by maximum likelihood. They all have the same number of parameters, so the one with the highest log-likelihood is also the one with the smallest AIC. The parameter $\phi$ does not mean the same thing in every model, so we also give the **effective range**: the distance at which the correlation falls to 0.05.
+
+```{r}
+#| label: models
+cands <- list(Exponential            = list("exponential", 0.5),
+              Spherical              = list("spherical",   0.5),
+              Gaussian               = list("gaussian",    0.5),
+              `Matern (kappa = 1.5)` = list("matern",      1.5),
+              `Matern (kappa = 2.5)` = list("matern",      2.5))
+fits <- lapply(cands, function(m) tryCatch(fit_ml(m[[1]], trend_best, m[[2]]),
+                                           error = function(e) NULL))
+fits <- Filter(Negate(is.null), fits)                      # drop a model if the fit fails
+
+eff_range <- function(f)
+  uniroot(function(h) cov.spatial(h, cov.model = f$cov.model, kappa = f$kappa,
+                                  cov.pars = c(1, f$phi)) - 0.05, c(1e-6, 50 * f$phi))$root
+
+tab <- data.frame(Model  = names(fits),
+                  logLik = sapply(fits, function(f) f$loglik),
+                  sigma2 = sapply(fits, function(f) f$sigmasq),
+                  tau2   = sapply(fits, function(f) f$tausq),
+                  phi    = sapply(fits, function(f) f$phi),
+                  `Effective range` = sapply(fits, eff_range), check.names = FALSE)
+tab$AIC         <- -2 * tab$logLik + 2 * (n_beta[trend_best] + 3)
+tab$`Delta AIC` <- tab$AIC - min(tab$AIC)
+knitr::kable(tab, digits = 1, row.names = FALSE)
+
+best <- tab$Model[which.min(tab$AIC)]
+```
+
+```{r}
+#| label: fitted-curves
+cols <- c("black", "firebrick", "steelblue", "darkgreen", "darkorange")[seq_along(fits)]
+plot(v_res, main = "Models fitted by maximum likelihood")
+for (i in seq_along(fits)) lines(fits[[i]], max.dist = md, col = cols[i], lwd = 2)
+legend("bottomright", legend = names(fits), col = cols, lwd = 2, bty = "n")
+```
+
+*Empirical variogram of the residuals (points) and the fitted models (curves). The curves are not fitted to the points but come from the likelihood, so the figure is only a visual check.*
+
+## Choice of the model
+
+The model with the smallest AIC is the **`r best`** model. The other models are `r paste(round(sort(tab[["Delta AIC"]][tab[["Delta AIC"]] > 0]), 1), collapse = ", ")` AIC points higher. `r if (any(tab[["Delta AIC"]] > 0 & tab[["Delta AIC"]] < 2)) "Some models are less than 2 AIC points away: with this number of observations they fit the data about as well, so the choice between them matters little." else "All the other models are more than 2 AIC points higher, so the data clearly prefer this model."`
+
+To see if the estimates depend on the method, we refit this model with REML, which corrects the tendency of ML to underestimate the variances.
+
+```{r}
+#| label: reml
+chosen    <- fits[[best]]
+chosen_re <- fit_ml(chosen$cov.model, trend_best, chosen$kappa, lik.method = "REML")
+knitr::kable(data.frame(Method = c("ML", "REML"),
+                        sigma2 = c(chosen$sigmasq, chosen_re$sigmasq),
+                        tau2   = c(chosen$tausq,   chosen_re$tausq),
+                        phi    = c(chosen$phi,     chosen_re$phi)),
+             digits = 1, row.names = FALSE)
+```
+
+We keep the ML estimates for the kriging, as asked.
+
+# Part 2: kriging in the likelihood framework
+
+## Prediction grid
+
+We predict on a regular 50 × 50 grid and keep only the points inside the convex hull of the data, to avoid extrapolating where there is no observation.
+
+```{r}
+#| label: grid
+gx <- seq(min(coords[, 1]), max(coords[, 1]), length.out = 50)
+gy <- seq(min(coords[, 2]), max(coords[, 2]), length.out = 50)
+pred_grid <- expand.grid(x = gx, y = gy)
+
+hull   <- st_convex_hull(st_union(st_as_sf(as.data.frame(coords), coords = 1:2)))
+inside <- lengths(st_within(st_as_sf(pred_grid, coords = 1:2), hull)) > 0
+```
+
+`r sum(inside)` of the `r nrow(pred_grid)` grid points are inside the convex hull.
+
+## Universal kriging
+
+The ML estimates of the chosen model are given to `krige.control` with the trend. `krige.conv` then computes the universal kriging predictor of the course: the trend at the new point, plus a correction based on the residuals of the nearby observations.
+
+```{r}
+#| label: kriging
+#| fig-width: 10
+#| fig-height: 4.5
+kc <- krige.control(trend.d = trend_best, trend.l = trend_best,
+                    cov.model = chosen$cov.model, kappa = chosen$kappa,
+                    cov.pars = c(chosen$sigmasq, chosen$phi), nugget = chosen$tausq)
+kr <- krige.conv(wolfcamp, locations = pred_grid[inside, ], krige = kc,
+                 output = output.control(messages = FALSE))
+
+pred_mat <- sd_mat <- matrix(NA, length(gx), length(gy))
+pred_mat[inside] <- kr$predict
+sd_mat[inside]   <- sqrt(kr$krige.var)
+
+par(mfrow = c(1, 2))
+image(gx, gy, pred_mat, col = hcl.colors(50, "YlGnBu", rev = TRUE), asp = 1,
+      xlab = "x", ylab = "y", main = "Kriging prediction")
+contour(gx, gy, pred_mat, add = TRUE)
+points(coords, pch = 20, cex = 0.5)
+image(gx, gy, sd_mat, col = hcl.colors(50, "Reds", rev = TRUE), asp = 1,
+      xlab = "x", ylab = "y", main = "Kriging standard deviation")
+points(coords, pch = 20, cex = 0.5)
+```
+
+*Left: predicted water level. Right: kriging standard deviation. The dots are the observations.*
+
+The predictions go from `r round(min(kr$predict))` to `r round(max(kr$predict))`. The standard deviation goes from `r round(min(sqrt(kr$krige.var)), 1)` to `r round(max(sqrt(kr$krige.var)), 1)`: it is smallest near the observations and largest where they are far apart.
+
+## Leave-one-out cross-validation
+
+Each observation is removed in turn and predicted from the others, with the parameters kept fixed. We compare the RMSE with that of a simple reference, the mean of the other observations. We also look at the standardised errors $(z_i - \hat z_i)/\sigma_i$: if the kriging variance is correct, they should have a mean close to 0 and a standard deviation close to 1.
+
+```{r}
+#| label: loo
+loo <- t(sapply(seq_len(n), function(i) {
+  g <- wolfcamp; g$coords <- coords[-i, ]; g$data <- z[-i]
+  k <- krige.conv(g, locations = coords[i, , drop = FALSE], krige = kc,
+                  output = output.control(messages = FALSE))
+  c(as.numeric(k$predict), as.numeric(k$krige.var))
+}))
+colnames(loo) <- c("pred", "var")
+err  <- z - loo[, "pred"]
+stdz <- err / sqrt(loo[, "var"])
+rmse <- sqrt(mean(err^2))
+ref  <- sqrt(mean((z - (sum(z) - z) / (n - 1))^2))          # mean of the other observations
+
+knitr::kable(data.frame(
+  RMSE = rmse, `RMSE of the reference` = ref,
+  `MSE reduction (%)` = 100 * (1 - rmse^2 / ref^2),
+  `Mean of std. errors` = mean(stdz), `SD of std. errors` = sd(stdz),
+  `Inside ±1.96 (%)` = 100 * mean(abs(stdz) < 1.96), check.names = FALSE),
+  digits = 2, row.names = FALSE)
+
+plot(loo[, "pred"], z, pch = 20, xlab = "Leave-one-out prediction", ylab = "Observed",
+     main = "Cross-validation"); abline(0, 1, col = "firebrick")
+```
+
+*Observed against predicted value for each observation. The red line is prediction = observation.*
+
+The RMSE of the kriging is `r round(rmse, 1)`, against `r round(ref, 1)` for the mean of the other observations, so the mean squared error is reduced by `r round(100 * (1 - rmse^2 / ref^2))` %. The standardised errors have a mean of `r round(mean(stdz), 2)` and a standard deviation of `r round(sd(stdz), 2)`, and `r round(100 * mean(abs(stdz) < 1.96))` % of them are between -1.96 and 1.96 (95 % expected).
+
+## Limitations
+
+The parameters are estimated and then used as if they were known, so the kriging variance does not include their uncertainty (the Bayesian approach of the course takes it into account). In the cross-validation the parameters are not re-estimated without each point, so the RMSE may be slightly optimistic. Finally, the model assumes a Gaussian process whose dependence does not depend on the direction, and the choice of the model rests on only `r n` observations.
