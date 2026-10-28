@@ -1,0 +1,373 @@
+---
+title: "Homework 4"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(ggplot2)
+load("../data/RainData.RData")      # gives `dati` (stations, all years) and `grid` (prediction points)
+
+# Coordinates in km, centred on the stations (better numerical behaviour); altitude in km.
+# The same centring is used for the stations and for the grid.
+x0 <- mean(dati$XUTM); y0 <- mean(dati$YUTM)
+prep <- function(d) transform(d, x = (XUTM - x0) / 1000, y = (YUTM - y0) / 1000, alt = Quota / 1000)
+dati <- prep(dati[!is.na(dati$totanno), ])
+grid <- prep(grid)
+stopifnot(!anyNA(dati[, c("x", "y", "alt")]), !anyNA(grid[, c("x", "y", "alt")]))
+
+# One list per year: data, response, coordinates and matrix of distances between stations
+yrs <- lapply(split(dati, dati$anno), function(d)
+  list(data = d, z = d$totanno, co = as.matrix(d[, c("x", "y")]),
+       D = as.matrix(dist(d[, c("x", "y")]))))
+years <- names(yrs)
+```
+
+We work with the annual rainfall (`totanno`, in mm) of `r length(unique(dati$ID))` stations over `r length(years)` years (`r nrow(dati)` measurements). For each year $t$ we use the model of the course:
+
+$$Z_t(s) = X(s)\beta_t + W_t(s) + \varepsilon_t(s)$$
+
+where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$ a Gaussian process with partial sill $\sigma^2_t$ and range $\phi_t$, and $\varepsilon_t(s)$ the nugget, with variance $\tau^2_t$. The parameters are estimated by maximum likelihood (ML), **year by year**.
+
+The steps are:
+
+1. fit by ML every combination of trend and covariance model, in every year, and check the convergence of each fit;
+2. compare the combinations by leave-one-out cross-validation, with the CRPS averaged over all the years;
+3. keep **one model** for all the years and use it to krige on `grid`, year by year.
+
+The number of stations per year is:
+
+```{r}
+#| label: stations
+knitr::kable(data.frame(Year = years,
+                        Stations = sapply(yrs, function(y) length(y$z)),
+                        `Duplicated coordinates` = sapply(yrs, function(y) sum(duplicated(y$co))),
+                        check.names = FALSE), row.names = FALSE)
+```
+
+# AI prompts
+
+<!-- To fill: initial prompt and follow-up prompts, with the answer. -->
+
+# Part 1: choice of the model
+
+## 1.1 Candidate models
+
+```{r}
+#| label: candidates
+# Trends: written as formulas in x, y (coordinates, km) and alt (altitude, km).
+# Add other trends here, for example: quadratic = ~ x + y + I(x^2) + I(x * y) + I(y^2)
+trends <- list(constant        = ~ 1,
+               linear          = ~ x + y,
+               altitude        = ~ alt,
+               linear_altitude = ~ x + y + alt)
+
+# Covariance models (kappa is the smoothness of the Matern model)
+covs <- data.frame(label = c("Exponential", "Spherical", "Gaussian", "Matern 1.5", "Matern 2.5"),
+                   model = c("exponential", "spherical", "gaussian", "matern", "matern"),
+                   kappa = c(0.5, 0.5, 0.5, 1.5, 2.5))
+
+# Starting values of the optimiser: range = 0.1, 0.3 and 1 times half the largest distance,
+# combined with nu = tau2 / sigma2 = 0.1 and 1  ->  6 starting values for every fit
+start_grid <- expand.grid(phi = c(0.1, 0.3, 1), nu = c(0.1, 1))
+```
+
+There are `r length(trends)` trends and `r nrow(covs)` covariance models, so `r length(trends) * nrow(covs)` models per year.
+
+## 1.2 Functions
+
+```{r}
+#| label: functions
+#| code-fold: true
+
+# ---- correlation functions (same parametrisation as geoR) ----
+corr_fun <- function(h, model, phi, kappa) {
+  u <- h / phi
+  switch(model,
+    exponential = exp(-u),
+    spherical   = ifelse(u < 1, 1 - 1.5 * u + 0.5 * u^3, 0),
+    gaussian    = exp(-u^2),
+    matern      = { r <- u^kappa * besselK(u, kappa) / (2^(kappa - 1) * gamma(kappa))
+                    r[u == 0] <- 1
+                    r })
+}
+
+# distances between two sets of points (rows of a and rows of b)
+cross_dist <- function(a, b)
+  sqrt(outer(a[, 1], b[, 1], "-")^2 + outer(a[, 2], b[, 2], "-")^2)
+
+# ---- ML for given phi and nu = tau2 / sigma2 ----
+# The trend coefficients and sigma2 have a closed form (generalised least squares),
+# so only phi and nu have to be searched numerically.
+gls_ml <- function(phi, nu, z, X, D, model, kappa) {
+  n  <- length(z)
+  R  <- chol(corr_fun(D, model, phi, kappa) + diag(nu, n))
+  Xs <- backsolve(R, X, transpose = TRUE)          # X and z "decorrelated"
+  zs <- backsolve(R, z, transpose = TRUE)
+  beta <- solve(crossprod(Xs), crossprod(Xs, zs))
+  s2   <- sum((zs - Xs %*% beta)^2) / n
+  ll   <- -0.5 * (n * log(2 * pi) + 2 * sum(log(diag(R))) + n * log(s2) + n)
+  list(logLik = ll, beta = c(beta), sigma2 = s2)
+}
+
+# ---- ML fit from the 6 starting values; convergence is checked for each one ----
+fit_ml <- function(z, X, D, model, kappa) {
+  maxd   <- max(D)
+  lower  <- log(c(0.005 * maxd, 1e-4))             # bounds of log(phi) and log(nu)
+  upper  <- log(c(5 * maxd, 100))
+  nll <- function(p) {                             # minus the log-likelihood
+    v <- tryCatch(-gls_ml(exp(p[1]), exp(p[2]), z, X, D, model, kappa)$logLik,
+                  error = function(e) 1e10)
+    if (is.finite(v)) v else 1e10
+  }
+  runs <- do.call(rbind, lapply(seq_len(nrow(start_grid)), function(k) {
+    start <- log(c(start_grid$phi[k] * maxd / 2, start_grid$nu[k]))
+    o <- optim(start, nll, method = "L-BFGS-B", lower = lower, upper = upper)
+    data.frame(converged = (o$convergence == 0), logLik = -o$value,
+               phi = exp(o$par[1]), nu = exp(o$par[2]))
+  }))
+  ok <- runs$converged
+  if (!any(ok)) ok <- rep(TRUE, nrow(runs))        # no start converged (n_conv = 0 will show it)
+  best <- runs[ok, ][which.max(runs$logLik[ok]), ] # best likelihood among the converged runs
+  g <- gls_ml(best$phi, best$nu, z, X, D, model, kappa)
+  list(model = model, kappa = kappa, phi = best$phi, sigma2 = g$sigma2,
+       tau2 = best$nu * g$sigma2, logLik = g$logLik,
+       n_conv = sum(runs$converged),               # number of converged starting values
+       spread = if (sum(runs$converged) > 1)       # logLik difference between converged runs
+                  diff(range(runs$logLik[runs$converged])) else NA)
+}
+
+# ---- universal kriging ----
+# S: covariance of the observations (with nugget), C: covariance between the observations
+# and the points to predict (latent process), X0: trend matrix at the points to predict.
+# The parameters p are treated as known. Two variances are returned:
+#  - var_latent: latent process S(s0) = X(s0) beta + W(s0)  (no nugget)
+#  - var_obs   : new observation Z(s0) = S(s0) + eps(s0)    (latent variance + tau2)
+krige_uk <- function(z, X, S, C, X0, p) {
+  Si  <- solve(S)
+  A   <- solve(t(X) %*% Si %*% X)
+  b   <- A %*% t(X) %*% Si %*% z                   # GLS trend coefficients
+  SiC <- Si %*% C
+  R   <- X0 - t(SiC) %*% X
+  v_latent <- p$sigma2 - colSums(C * SiC) + rowSums((R %*% A) * R)
+  v_latent <- pmax(v_latent, 0)                    # avoids tiny negative values (rounding)
+  data.frame(pred = c(X0 %*% b + t(SiC) %*% (z - X %*% b)),
+             var_latent = v_latent, var_obs = v_latent + p$tau2)
+}
+
+# ---- leave-one-out: each station is removed and predicted from the others (p fixed) ----
+loo <- function(z, X, D, p) {
+  C <- p$sigma2 * corr_fun(D, p$model, p$phi, p$kappa)   # latent covariance between stations
+  S <- C + diag(p$tau2, length(z))                       # covariance of the observations
+  do.call(rbind, lapply(seq_along(z), function(i)
+    krige_uk(z[-i], X[-i, , drop = FALSE], S[-i, -i], C[-i, i, drop = FALSE],
+             X[i, , drop = FALSE], p)))
+}
+
+# ---- kriging at the points of a grid g ----
+krige_grid <- function(z, X, co, p, g, trend) {
+  C <- p$sigma2 * corr_fun(cross_dist(co, as.matrix(g[, c("x", "y")])), p$model, p$phi, p$kappa)
+  S <- p$sigma2 * corr_fun(as.matrix(dist(co)), p$model, p$phi, p$kappa) + diag(p$tau2, length(z))
+  krige_uk(z, X, S, C, model.matrix(trend, g), p)
+}
+
+# ---- CRPS of a Gaussian predictive distribution (smaller is better) ----
+crps_norm <- function(y, m, s) {
+  u <- (y - m) / s
+  s * (u * (2 * pnorm(u) - 1) + 2 * dnorm(u) - 1 / sqrt(pi))
+}
+```
+
+The kriging is a universal kriging with the formulas of the course, where the parameters are the ML estimates (plug-in). The predictor is the same for the latent process and for a new observation, only the variance changes: the variance of a new observation is the variance of the latent process plus $\tau^2$.
+
+## 1.3 Fit and cross-validation of all the models
+
+For every year, trend and covariance model, we (i) fit the model by ML from the 6 starting values, and (ii) predict each station from the others (leave-one-out). The observed values contain the nugget, so the scores use the variance of a **new observation**. The coverage is the percentage of stations inside their 95 % prediction interval.
+
+This chunk is long (a few minutes): its result is cached by Quarto. Delete the `_cache` folder after any change in the functions above.
+
+```{r}
+#| label: compare
+#| cache: true
+fits   <- list()                                   # one fit per year, trend and covariance
+scores <- list()
+for (yr in years) {
+  y <- yrs[[yr]]
+  for (tr in names(trends)) {
+    X <- model.matrix(trends[[tr]], y$data)
+    for (j in seq_len(nrow(covs))) {
+      f  <- fit_ml(y$z, X, y$D, covs$model[j], covs$kappa[j])
+      cv <- loo(y$z, X, y$D, f)
+      e  <- y$z - cv$pred
+      s  <- sqrt(cv$var_obs)
+      fits[[paste(yr, tr, covs$label[j])]] <- f
+      scores[[length(scores) + 1]] <- data.frame(
+        year = yr, trend = tr, covariance = covs$label[j],
+        n_conv = f$n_conv, spread = f$spread,
+        CRPS = mean(crps_norm(y$z, cv$pred, s)), RMSE = sqrt(mean(e^2)),
+        coverage = 100 * mean(abs(e / s) < 1.96))
+    }
+  }
+}
+scores <- do.call(rbind, scores)
+```
+
+## 1.4 Convergence of the ML fits
+
+`n_conv` is the number of starting values (out of `r nrow(start_grid)`) for which the optimiser reports a successful convergence (code 0). Only the converged runs are used to choose the estimates, and `spread` is the difference of log-likelihood between the converged runs of the same fit: a large value means that different starting values reach different optima.
+
+```{r}
+#| label: convergence
+knitr::kable(data.frame(
+  `Fits (year x trend x covariance)`                 = nrow(scores),
+  `Fits with no converged start`                     = sum(scores$n_conv == 0),
+  `Fits with at least one start not converged`       = sum(scores$n_conv < nrow(start_grid)),
+  `Fits where converged starts differ by more than 0.1` = sum(scores$spread > 0.1, na.rm = TRUE),
+  check.names = FALSE), row.names = FALSE)
+
+problems <- scores[scores$n_conv < nrow(start_grid) | (scores$spread > 0.1) %in% TRUE,
+                   c("year", "trend", "covariance", "n_conv", "spread")]
+knitr::kable(head(problems, 30), digits = 2, row.names = FALSE,
+             caption = "Fits with a convergence problem (first 30)")
+```
+
+## 1.5 Comparison of the models
+
+The scores are averaged over all the years (each year has the same weight).
+
+```{r}
+#| label: comparison
+comp <- aggregate(cbind(CRPS, RMSE, coverage) ~ trend + covariance, data = scores, FUN = mean)
+comp <- comp[order(comp$CRPS), ]
+knitr::kable(comp, digits = 2, row.names = FALSE,
+             caption = "Mean leave-one-out scores over all the years, sorted by CRPS")
+```
+
+```{r}
+#| label: crps-by-year
+#| fig-width: 10
+#| fig-height: 5
+ggplot(scores, aes(year, CRPS, colour = covariance, group = covariance)) +
+  geom_line() + geom_point(size = 1) + facet_wrap(~ trend) +
+  labs(x = NULL, colour = NULL) + theme_minimal() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
+*CRPS of every model in every year: this shows whether the ranking of the models is the same in all the years.*
+
+<!-- To write: choice of the model and justification. -->
+
+## 1.6 The final model
+
+By default the final model is the one with the smallest mean CRPS. To choose another one, replace the first line of the chunk (an example is given in the comment).
+
+```{r}
+#| label: final-model
+final <- comp[1, ]
+# final <- comp[comp$trend == "linear" & comp$covariance == "Exponential", ]   # another choice
+final_trend <- final$trend
+final_cov   <- final$covariance
+fit_of <- function(yr) fits[[paste(yr, final_trend, final_cov)]]    # fit of this model in year yr
+
+knitr::kable(final, digits = 2, row.names = FALSE)
+
+par_year <- data.frame(year   = years,
+                       n      = sapply(yrs, function(y) length(y$z)),
+                       sigma2 = sapply(years, function(yr) fit_of(yr)$sigma2),
+                       phi    = sapply(years, function(yr) fit_of(yr)$phi),
+                       tau2   = sapply(years, function(yr) fit_of(yr)$tau2))
+par_year$`nugget share (%)` <- 100 * par_year$tau2 / (par_year$tau2 + par_year$sigma2)
+knitr::kable(par_year, digits = 1, row.names = FALSE,
+             caption = "ML estimates of the final model in each year (phi in km)")
+```
+
+```{r}
+#| label: params-by-year
+#| fig-width: 11
+#| fig-height: 3
+par(mfrow = c(1, 4))
+for (v in c("sigma2", "tau2", "phi", "nugget share (%)"))
+  plot(as.numeric(par_year$year), par_year[[v]], type = "b", xlab = "year", ylab = v)
+```
+
+*Estimates of the final model, year by year. The nugget share is $\tau^2 / (\tau^2 + \sigma^2)$.*
+
+<!-- To write: comments on the estimates and their evolution. -->
+
+# Part 2: kriging on the grid, year by year
+
+The 1005 points of `grid` are not on a regular lattice, so the predictions are drawn as points. The trend of the final model is evaluated at the grid points with the coordinates (and the altitude, if the trend uses it) given in `grid`. The parameters of the final model are the ML estimates of each year (previous section).
+
+```{r}
+#| label: kriging
+maps <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]
+  k <- krige_grid(y$z, model.matrix(trends[[final_trend]], y$data), y$co,
+                  fit_of(yr), grid, trends[[final_trend]])
+  data.frame(year = yr, XUTM = grid$XUTM, YUTM = grid$YUTM, k)
+}))
+maps$sd    <- sqrt(maps$var_obs)              # new observation (consistent with the cross-validation)
+maps$lower <- maps$pred - 1.96 * maps$sd      # 95 % prediction interval
+maps$upper <- maps$pred + 1.96 * maps$sd
+
+knitr::kable(aggregate(cbind(pred, sd) ~ year, data = maps, FUN = mean),
+             digits = 1, col.names = c("Year", "Mean prediction (mm)", "Mean std. dev. (mm)"),
+             caption = "Average over the grid points")
+```
+
+```{r}
+#| label: maps-pred
+#| fig-width: 11
+#| fig-height: 9
+map_theme <- theme_minimal() + theme(axis.text = element_blank(), axis.title = element_blank())
+
+ggplot(maps, aes(XUTM, YUTM, colour = pred)) + geom_point(size = 0.7) +
+  facet_wrap(~ year) + coord_equal() +
+  scale_colour_viridis_c(name = "Rainfall\n(mm)") + map_theme
+```
+
+*Predicted annual rainfall. All the years share the same colour scale, so they can be compared directly.*
+
+```{r}
+#| label: maps-sd
+#| fig-width: 11
+#| fig-height: 9
+ggplot(maps, aes(XUTM, YUTM, colour = sd)) + geom_point(size = 0.7) +
+  facet_wrap(~ year) + coord_equal() +
+  scale_colour_viridis_c(name = "Std. dev.\n(mm)", option = "magma") + map_theme
+```
+
+*Standard deviation of the prediction of a new observation (it cannot go below $\tau$). The data frame `maps` also contains `lower` and `upper`, the bounds of the 95 % prediction intervals, if they have to be mapped.*
+
+<!-- To write: comparison of the years. -->
+
+## Calibration of the final model
+
+If the predictive variance is correct, the standardised errors $(z_i - \hat z_i)/\sigma_i$ of the leave-one-out have a standard deviation close to 1 and 95 % of them are within $\pm 1.96$. The variance of a new observation is the one consistent with the target (an observed value, which contains the nugget); the coverage with the variance of the latent process is given for comparison. The last two columns of RMSE compare the model with the prediction by the mean of the other stations.
+
+```{r}
+#| label: calibration
+calib <- do.call(rbind, lapply(years, function(yr) {
+  y  <- yrs[[yr]]; n <- length(y$z)
+  cv <- loo(y$z, model.matrix(trends[[final_trend]], y$data), y$D, fit_of(yr))
+  e  <- y$z - cv$pred
+  data.frame(Year = yr, Stations = n,
+             RMSE = sqrt(mean(e^2)),
+             `RMSE mean of others` = sqrt(mean((y$z - (sum(y$z) - y$z) / (n - 1))^2)),
+             `SD std. error` = sd(e / sqrt(cv$var_obs)),
+             `Coverage 95 % (new obs.)` = 100 * mean(abs(e / sqrt(cv$var_obs)) < 1.96),
+             `Coverage 95 % (latent)`   = 100 * mean(abs(e / sqrt(cv$var_latent)) < 1.96),
+             check.names = FALSE)
+}))
+knitr::kable(calib, digits = 2, row.names = FALSE)
+```
+
+<!-- To write: conclusion and limitations. -->
