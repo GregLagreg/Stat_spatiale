@@ -176,10 +176,10 @@ legend("topright", legend = c("kappa = 0.1", "kappa = 0.5", "kappa = 1.5", "kapp
 par(mfrow = c(1, 1))
 ```
 
-```{}
+```         
 ```
 
-```{}
+```         
 ```
 
 ```         
