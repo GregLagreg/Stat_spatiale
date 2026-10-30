@@ -39,9 +39,9 @@ where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$
 
 The steps are:
 
-1. fit by ML every combination of trend and covariance model, in every year, and check the convergence of each fit;
-2. compare the combinations by leave-one-out cross-validation, with the CRPS averaged over all the years;
-3. keep **one model** for all the years and use it to krige on `grid`, year by year.
+1.  fit by ML every combination of trend and covariance model, in every year, and check the convergence of each fit;
+2.  compare the combinations by leave-one-out cross-validation, with the CRPS averaged over all the years;
+3.  keep **one model** for all the years and use it to krige on `grid`, year by year.
 
 The number of stations per year is:
 
@@ -56,6 +56,10 @@ knitr::kable(data.frame(Year = years,
 # AI prompts
 
 <!-- To fill: initial prompt and follow-up prompts, with the answer. -->
+
+As in the previous homeworks, we gave the AI the data, the method we wanted and the checks to do.
+
+> I’m a student in spatial statistics. I have a dataset in R from RainData.RData which contains yearly total rainfall (totanno) at various weather stations across several years, along with their UTM coordinates and altitude (Quota). I also have a p rediction grid. For each year independently, I need to: 1) Choose a trend and a variogram model, and justify my choice using Proper scores. 2) Interpolate the rainfall on the estimation grid using kriging in a maximum likelihood framework. 3) Build pointwise confidence intervals on the grid. 4) Map the results (including the confidence intervals) and comment on the output. To do this, please write R code to loop over the years. Inside the loop, first compare different trends (e.g., constant, linear in coordinates, and including altitude as a covariate) and different covariance models (exponential, spherical, gaussian, matern with a few kappa) fitted by ML with a nugget. To justify the choice of the best trend and covariance combination for each year, do not use AIC; instead, compute Proper scores (like CRPS and LogS) via leave-one-out cross-validation. Once the best model is selected for a year, do universal kriging on the grid. Calculate the predictions and the 95% pointwise confidence intervals (make sure to include the nugget variance so the interval is valid for a new observation). Map the predictions and the upper/lower confidence bounds. Give the R code in chunks for an RMarkdown document. Explain each result and the spatial maps simply, without over-interpreting.
 
 # Part 1: choice of the model
 
@@ -298,7 +302,7 @@ for (v in c("sigma2", "tau2", "phi", "nugget share (%)"))
   plot(as.numeric(par_year$year), par_year[[v]], type = "b", xlab = "year", ylab = v)
 ```
 
-*Estimates of the final model, year by year. The nugget share is $\tau^2 / (\tau^2 + \sigma^2)$.*
+*Estimates of the final model, year by year. The nugget share is* $\tau^2 / (\tau^2 + \sigma^2)$.
 
 <!-- To write: comments on the estimates and their evolution. -->
 
@@ -345,7 +349,7 @@ ggplot(maps, aes(XUTM, YUTM, colour = sd)) + geom_point(size = 0.7) +
   scale_colour_viridis_c(name = "Std. dev.\n(mm)", option = "magma") + map_theme
 ```
 
-*Standard deviation of the prediction of a new observation (it cannot go below $\tau$). The data frame `maps` also contains `lower` and `upper`, the bounds of the 95 % prediction intervals, if they have to be mapped.*
+*Standard deviation of the prediction of a new observation (it cannot go below* $\tau$). The data frame `maps` also contains `lower` and `upper`, the bounds of the 95 % prediction intervals, if they have to be mapped.
 
 <!-- To write: comparison of the years. -->
 
