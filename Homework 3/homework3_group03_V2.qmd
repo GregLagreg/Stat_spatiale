@@ -1,0 +1,544 @@
+---
+title: "Homework 3 (revised)"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(geoR); library(sf); library(ggplot2)
+data(wolfcamp)                       # data shipped with geoR: no external file is needed
+coords <- wolfcamp$coords
+z      <- wolfcamp$data
+n      <- length(z)
+maxd   <- max(dist(coords))          # largest distance between two wells
+md     <- 0.5 * maxd                 # maximum distance for the empirical variograms
+```
+
+We work with the Wolfcamp data (`r n` measurements of the piezometric head of an aquifer in Texas) and the geostatistical model of the course:
+
+$$Z(s) = X(s)\beta + W(s) + \varepsilon(s)$$
+
+where $X(s)\beta$ is a polynomial trend in the coordinates, $W(s)$ a Gaussian process with partial sill $\sigma^2$ and range parameter $\phi$, and $\varepsilon(s)$ the nugget, with variance $\tau^2$. All parameters are estimated by likelihood.
+
+**What changed in this revision.**
+
+1. *Estimation checks* (Section 1.2 and 1.3): `likfit` is run from several starting values, and for each run we report the convergence code, the log-likelihood and the estimates. The likelihood is also maximised with our own code, and the profile likelihood of $\phi$ is used to see whether the range is identifiable and to explain the difference between ML and REML.
+2. *Model choice for prediction* (Section 1.4): all combinations of a linear or quadratic trend with five covariance models are compared by leave-one-out cross-validation, with RMSE, MAE and two proper scoring rules (CRPS and logarithmic score).
+3. *Diagnostics and uncertainty* (Sections 1.5 and 2): Gaussianity of the detrended data, maps of the lower and upper bounds of the 95 % prediction intervals, and an explicit choice of the predictive variance (latent process or new observation).
+4. *Reproducibility*: this `.qmd` file is the complete source. It only uses data shipped with `geoR`, so it runs without any local file.
+5. *Final revision*: Section 1.3 now explains the ML–REML difference through the ratio $\sigma^2/\phi$ (nearly flat likelihood ridge for large ranges), and Section 1.4 presents the paired Wilcoxon test as exploratory only.
+
+# AI prompts
+
+**Initial prompt.** We gave the AI the data, the method we wanted and the checks to do.
+
+> I'm a student in spatial statistics. I have the wolfcamp data from geoR in R (85 measurements of water level, geostatistical data) and I need to: 1) choose a variogram model and justify the choice, 2) do kriging in the likelihood framework. I think there is a trend in the coordinates, so first compare a constant, linear and quadratic trend with likfit (ML) and AIC. Then with the chosen trend, fit some covariance models (exponential, spherical, gaussian, matern with a few kappa) by ML with a nugget, compare them with AIC and plot them on the empirical variogram of the residuals. Then do universal kriging with krige.conv on a grid (only inside the area of the data), map the prediction and the standard deviation, and check it with leave-one-out cross-validation (RMSE compared to a simple mean, and standardised errors). Give the R code in chunks for Quarto and explain each result simply, without over-interpreting.
+
+**Follow-up prompt, after the feedback on the first version.**
+
+> My teacher says the ML and REML estimates for the quadratic trend with exponential covariance are very different (range 21 vs 524) and that I must check the estimation. Can you run likfit from several starting values, show for each one if it converged, the log-likelihood and the estimates, and check if the range is identifiable (maybe with a profile likelihood)? Then compare linear and quadratic trends with the different covariance models by leave-one-out cross-validation using RMSE, MAE, CRPS and log score, and use this to choose the final model (a simpler one is fine if it predicts as well). Also add a Gaussianity check on the detrended data that takes the spatial correlation into account, maps of the lower and upper 95 % prediction bounds with readable legends, and say clearly if the prediction variance is for the latent process or for a new observation with the nugget. Keep the explanations simple.
+
+**Second follow-up prompt, for the final revision.**
+
+> My teacher explains that for the quadratic trend with exponential covariance, when the range is large the variogram is almost τ² + (σ²/φ)h, so the data only identify σ²/φ and not σ² and φ separately, which explains why the two REML solutions are so different. Can you rewrite the interpretation of Section 1.3 with this explanation (using the ratios from our table), and rewrite the Wilcoxon part of Section 1.4 so that the test is only exploratory and the simpler model is justified by the small CRPS difference and parsimony? No new fits are needed.
+
+**Answer.** Here is the analysis asked for by these prompts.
+
+# Part 1: choice of the model
+
+## 1.1 Candidate models
+
+From the course and the first version of this homework, the raw variogram keeps increasing because of a trend, so we only consider a **linear** (3 coefficients) and a **quadratic** (6 coefficients) trend in the coordinates. For the covariance we consider five models: exponential, spherical, Gaussian, and Matérn with $\kappa = 1.5$ and $\kappa = 2.5$. This gives 10 candidate models.
+
+## 1.2 Fitting with `likfit` from several starting values
+
+For each model, `likfit` is run from 6 starting values: three values of the range ($0.1$, $0.3$ and $1$ times half the largest distance) combined with two shares of nugget (10 % and 50 % of the residual variance). For each run we keep the convergence code of the optimiser (0 means a successful convergence), the log-likelihood and the estimates.
+
+```{r}
+#| label: likfit-multi
+cands <- data.frame(cov = c("exponential", "spherical", "gaussian", "matern", "matern"),
+                    kappa = c(0.5, 0.5, 0.5, 1.5, 2.5),
+                    label = c("Exponential", "Spherical", "Gaussian", "Matern 1.5", "Matern 2.5"))
+starts <- expand.grid(phi = c(0.1, 0.3, 1) * md, nu = c(0.1, 1))   # nu = nugget / partial sill
+
+likfit_multi <- function(cov, kappa, trend, method = "ML") {
+  s2 <- var(residuals(lm(z ~ trend.spatial(trend, wolfcamp) - 1)))
+  runs <- lapply(seq_len(nrow(starts)), function(k) {
+    tau0 <- s2 * starts$nu[k] / (1 + starts$nu[k])
+    f <- tryCatch(likfit(wolfcamp, trend = trend, cov.model = cov, kappa = kappa,
+                         ini.cov.pars = c(s2 - tau0, starts$phi[k]), nugget = tau0,
+                         lik.method = method, messages = FALSE),
+                  error = function(e) NULL)
+    if (is.null(f)) return(data.frame(start = k, convergence = NA, logLik = NA,
+                                      sigma2 = NA, phi = NA, tau2 = NA))
+    conv <- f$info.minimisation.function$convergence
+    data.frame(start = k, convergence = if (is.null(conv)) NA else conv,
+               logLik = f$loglik, sigma2 = f$sigmasq, phi = f$phi, tau2 = f$tausq)
+  })
+  do.call(rbind, runs)
+}
+
+lf <- list()
+for (tr in c("1st", "2nd")) for (j in seq_len(nrow(cands)))
+  lf[[paste(tr, cands$label[j])]] <- likfit_multi(cands$cov[j], cands$kappa[j], tr)
+```
+
+The case pointed out in the feedback is the quadratic trend with the exponential covariance. Here are the 6 runs, with ML and with REML:
+
+```{r}
+#| label: multi-quad-exp
+reml_q <- likfit_multi("exponential", 0.5, "2nd", "REML")
+reml_l <- likfit_multi("exponential", 0.5, "1st", "REML")
+show_runs <- function(d) cbind(start_phi = round(starts$phi), start_nu = starts$nu, d[, -1])
+knitr::kable(show_runs(lf[["2nd Exponential"]]), digits = 1,
+             caption = "Quadratic trend, exponential covariance, ML")
+knitr::kable(show_runs(reml_q), digits = 1,
+             caption = "Quadratic trend, exponential covariance, REML")
+```
+
+*Each row is one starting value. Converged runs that reach the same log-likelihood with the same estimates show that the optimum is stable; different log-likelihoods show local optima; almost the same log-likelihood with different estimates shows a flat likelihood, where the parameters are not well identified (see Section 1.3).*
+
+## 1.3 Independent check of the likelihood and identifiability of the range
+
+To check `likfit`, we also maximise the likelihood with our own code. For fixed $\phi$ and $\nu = \tau^2/\sigma^2$, the trend coefficients and $\sigma^2$ have closed-form estimates (generalised least squares), so the likelihood only has to be maximised numerically over $(\phi, \nu)$. The same 6 starting values are used. As a third check, the log-likelihood is also compared with the one of `nlme::gls` below.
+
+```{r}
+#| label: own-functions
+#| code-fold: true
+# ---- correlation functions (same parametrisation as geoR) ----
+corr_fun <- function(h, model, phi, kappa = 0.5) {
+  u <- h / phi
+  r <- switch(model,
+    exponential = exp(-u),
+    spherical   = ifelse(u < 1, 1 - 1.5 * u + 0.5 * u^3, 0),
+    gaussian    = exp(-u^2),
+    matern      = {
+      m <- u^kappa * besselK(u, kappa) / (2^(kappa - 1) * gamma(kappa))
+      m[u == 0] <- 1; m[!is.finite(m)] <- 0; m
+    })
+  r
+}
+
+cross_dist <- function(a, b)
+  sqrt(outer(a[, 1], b[, 1], "-")^2 + outer(a[, 2], b[, 2], "-")^2)
+
+# trend matrix (coordinates centred and scaled: same column space as geoR's trend)
+trend_mat <- function(co, trend, ref = coords) {
+  x <- (co[, 1] - mean(ref[, 1])) / sd(ref[, 1])
+  y <- (co[, 2] - mean(ref[, 2])) / sd(ref[, 2])
+  if (trend == "1st") cbind(1, x, y) else cbind(1, x, y, x^2, x * y, y^2)
+}
+
+# ---- profile log-likelihood for fixed phi and nu = tau2 / sigma2 ----
+# beta and sigma2 are profiled out analytically
+prof_ll <- function(phi, nu, model, kappa, X, z, D, method = "ML") {
+  n <- length(z); p <- ncol(X)
+  V <- corr_fun(D, model, phi, kappa) + diag(nu, n)
+  R <- tryCatch(chol(V), error = function(e) NULL)
+  if (is.null(R)) return(list(ll = -1e10))
+  Xs <- backsolve(R, X, transpose = TRUE); zs <- backsolve(R, z, transpose = TRUE)
+  XtX  <- crossprod(Xs)
+  beta <- solve(XtX, crossprod(Xs, zs))
+  rss  <- sum((zs - Xs %*% beta)^2)
+  ldV  <- 2 * sum(log(diag(R)))
+  if (method == "ML") {
+    s2 <- rss / n
+    ll <- -0.5 * (n * log(2 * pi) + ldV + n * log(s2) + n)
+  } else {
+    s2 <- rss / (n - p)
+    ll <- -0.5 * ((n - p) * log(2 * pi) + ldV + c(determinant(XtX)$modulus) +
+                  (n - p) * log(s2) + (n - p))
+  }
+  list(ll = ll, beta = c(beta), sigma2 = s2, tau2 = nu * s2)
+}
+
+# ---- own maximisation from several starting values ----
+own_fit <- function(model, trend, kappa = 0.5, method = "ML", starts) {
+  X <- trend_mat(coords, trend); D <- as.matrix(dist(coords))
+  lo <- c(log(0.005 * maxd), log(1e-4)); up <- c(log(5 * maxd), log(100))
+  nll <- function(t) -prof_ll(exp(t[1]), exp(t[2]), model, kappa, X, z, D, method)$ll
+  runs <- lapply(seq_len(nrow(starts)), function(k) {
+    o <- optim(c(log(starts$phi[k]), log(starts$nu[k])), nll, method = "L-BFGS-B",
+               lower = lo, upper = up)
+    pr <- prof_ll(exp(o$par[1]), exp(o$par[2]), model, kappa, X, z, D, method)
+    data.frame(start = k, convergence = o$convergence, logLik = -o$value,
+               sigma2 = pr$sigma2, phi = exp(o$par[1]), tau2 = pr$tau2,
+               phi_at_bound = any(abs(o$par[1] - c(lo[1], up[1])) < 1e-3),
+               nugget_zero = abs(o$par[2] - lo[2]) < 1e-3)
+  })
+  do.call(rbind, runs)
+}
+
+# ---- universal kriging (formulas (3) and (4) of the course) ----
+# returns the predictor and two variances: for the latent process S = X b + W
+# (without nugget) and for a new observation Z = S + eps (with nugget)
+uk <- function(X, zz, co, X0, co0, p) {
+  S  <- p$sigma2 * corr_fun(as.matrix(dist(co)), p$model, p$phi, p$kappa) + diag(p$tau2, nrow(co))
+  C  <- p$sigma2 * corr_fun(cross_dist(co, co0), p$model, p$phi, p$kappa)
+  Si <- chol2inv(chol(S))
+  A  <- crossprod(X, Si %*% X)
+  b  <- solve(A, crossprod(X, Si %*% zz))
+  SiC  <- Si %*% C
+  pred <- c(X0 %*% b + crossprod(SiC, zz - X %*% b))
+  Rm   <- X0 - crossprod(SiC, X)
+  v_lat <- p$sigma2 - colSums(C * SiC) + rowSums((Rm %*% solve(A)) * Rm)
+  list(pred = pred, var_latent = v_lat, var_obs = v_lat + p$tau2)
+}
+
+# ---- leave-one-out with fixed parameters ----
+loo_uk <- function(p, trend) {
+  X <- trend_mat(coords, trend)
+  out <- t(sapply(seq_len(n), function(i) {
+    k <- uk(X[-i, , drop = FALSE], z[-i], coords[-i, ], X[i, , drop = FALSE],
+            coords[i, , drop = FALSE], p)
+    c(k$pred, k$var_latent, k$var_obs)
+  }))
+  colnames(out) <- c("pred", "var_latent", "var_obs")
+  as.data.frame(out)
+}
+
+# ---- scores (smaller is better) ----
+crps_norm <- function(y, m, s) { u <- (y - m) / s; s * (u * (2 * pnorm(u) - 1) + 2 * dnorm(u) - 1 / sqrt(pi)) }
+logs_norm <- function(y, m, s) -dnorm(y, m, s, log = TRUE)
+```
+
+```{r}
+#| label: own-fit
+own <- list()
+for (tr in c("1st", "2nd")) for (j in seq_len(nrow(cands)))
+  own[[paste(tr, cands$label[j])]] <- own_fit(cands$cov[j], tr, cands$kappa[j], "ML", starts)
+
+best_row <- function(d) { d <- d[!is.na(d$logLik) & d$convergence %in% 0, ]
+                          if (nrow(d) == 0) NULL else d[which.max(d$logLik), ] }
+summ <- do.call(rbind, lapply(names(lf), function(m) {
+  a <- lf[[m]]; b <- best_row(a); o <- best_row(own[[m]])
+  okl <- a$logLik[a$convergence %in% 0]
+  data.frame(Model = m,
+             `Converged runs` = paste0(length(okl), "/", nrow(a)),
+             `Spread of logLik` = if (length(okl)) max(okl) - min(okl) else NA,
+             `logLik likfit` = if (is.null(b)) NA else b$logLik,
+             `logLik own code` = o$logLik,
+             sigma2 = o$sigma2, phi = o$phi, tau2 = o$tau2,
+             `phi at bound` = o$phi_at_bound, `nugget ~ 0` = o$nugget_zero, check.names = FALSE)
+}))
+knitr::kable(summ, digits = 1, row.names = FALSE)
+```
+
+*For each model: number of `likfit` runs that converged, difference between the best and the worst converged log-likelihood, best log-likelihood found by `likfit` and by our code, and the estimates of our code. "phi at bound" means that the range went to the limit of the search interval, and "nugget ~ 0" that the nugget went to 0.*
+
+`r d_ll <- abs(summ[["logLik likfit"]] - summ[["logLik own code"]]); if (all(d_ll < 0.05, na.rm = TRUE)) "For all the models, the best log-likelihood of likfit and of our code agree (difference below 0.05), so the maximum likelihood estimates can be trusted." else paste0("For ", paste(summ$Model[which(d_ll >= 0.05)], collapse = ", "), ", likfit and our code do not reach the same maximum (difference up to ", round(max(d_ll, na.rm = TRUE), 1), "); in the rest of the homework we use the solution with the highest likelihood, which is the one of our code.")`
+
+As a third, independent check, we fit the linear trend with exponential covariance with `nlme::gls` (method ML), started from our estimates:
+
+```{r}
+#| label: nlme-check
+o1 <- best_row(own[["1st Exponential"]])
+g1 <- tryCatch({
+  df <- data.frame(z = z, trend_mat(coords, "1st")[, -1], cx = coords[, 1], cy = coords[, 2])
+  nlme::gls(z ~ x + y, data = df, method = "ML",
+            correlation = nlme::corExp(value = c(o1$phi, max(0.01, o1$tau2 / (o1$tau2 + o1$sigma2))),
+                                       form = ~ cx + cy, nugget = TRUE))
+}, error = function(e) NULL)
+ll_gls <- if (is.null(g1)) NA else as.numeric(logLik(g1))
+```
+
+`r if (is.na(ll_gls)) "The gls fit did not run." else paste0("The maximised log-likelihood is ", round(ll_gls, 2), " with gls and ", round(o1$logLik, 2), " with our code", ifelse(abs(ll_gls - o1$logLik) < 0.05, ", so gls and our code agree.", ".")) `
+
+### Profile likelihood of the range
+
+To see how well the data determine $\phi$, we compute the **profile likelihood**: for each value of $\phi$ on a grid, the likelihood is maximised over all the other parameters. A flat profile means that the data give little information on $\phi$. The horizontal line at $-1.92$ gives an approximate 95 % confidence interval for $\phi$ (likelihood ratio test).
+
+```{r}
+#| label: profile
+phi_grid <- exp(seq(log(0.01 * maxd), log(5 * maxd), length.out = 40))
+D <- as.matrix(dist(coords))
+prof <- do.call(rbind, lapply(c("1st", "2nd"), function(tr) {
+  X <- trend_mat(coords, tr)
+  do.call(rbind, lapply(c("ML", "REML"), function(m) {
+    ll <- sapply(phi_grid, function(ph) optimize(function(t)
+      prof_ll(ph, exp(t), "exponential", 0.5, X, z, D, m)$ll,
+      c(log(1e-4), log(100)), maximum = TRUE)$objective)
+    data.frame(phi = phi_grid, rel = ll - max(ll),
+               trend = ifelse(tr == "1st", "Linear trend", "Quadratic trend"), method = m)
+  }))
+}))
+ggplot(prof, aes(phi, rel, colour = method)) +
+  geom_line(linewidth = 0.8) + geom_hline(yintercept = -1.92, linetype = 2) +
+  facet_wrap(~ trend) + scale_x_log10() + coord_cartesian(ylim = c(-10, 0.3)) +
+  labs(x = expression(phi ~ "(log scale)"), y = "Profile log-likelihood (relative to its maximum)",
+       colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+
+ci <- aggregate(phi ~ trend + method, prof[prof$rel >= -1.92, ],
+                function(p) c(low = min(p), high = max(p)))
+ci <- data.frame(ci[, 1:2], round(ci$phi, 1))
+ci$`Reaches the end of the grid` <- ci$high >= max(phi_grid) * 0.999
+knitr::kable(ci, col.names = c("Trend", "Method", "Lower", "Upper", "Reaches the end of the grid"),
+             caption = "Approximate 95 % interval for phi (exponential covariance)")
+```
+
+*Profile log-likelihood of the range for the exponential model. The values of $\phi$ above the dashed line are compatible with the data.*
+
+We also compare the ML and REML estimates of the exponential model, for both trends, with `likfit` and with our code:
+
+```{r}
+#| label: ml-reml
+X1 <- trend_mat(coords, "1st"); X2 <- trend_mat(coords, "2nd")
+own_reml_l <- best_row(own_fit("exponential", "1st", 0.5, "REML", starts))
+own_reml_q <- best_row(own_fit("exponential", "2nd", 0.5, "REML", starts))
+mr <- rbind(
+  cbind(Trend = "linear",    Method = "ML",   Source = c("likfit", "own"),
+        rbind(best_row(lf[["1st Exponential"]]), best_row(own[["1st Exponential"]])[, 1:6])),
+  cbind(Trend = "linear",    Method = "REML", Source = c("likfit", "own"),
+        rbind(best_row(reml_l), own_reml_l[, 1:6])),
+  cbind(Trend = "quadratic", Method = "ML",   Source = c("likfit", "own"),
+        rbind(best_row(lf[["2nd Exponential"]]), best_row(own[["2nd Exponential"]])[, 1:6])),
+  cbind(Trend = "quadratic", Method = "REML", Source = c("likfit", "own"),
+        rbind(best_row(reml_q), own_reml_q[, 1:6])))
+mr$`sigma2/phi` <- mr$sigma2 / mr$phi
+knitr::kable(mr[, c("Trend", "Method", "Source", "logLik", "sigma2", "phi", "tau2", "sigma2/phi")],
+             digits = 1, row.names = FALSE)
+qr <- mr[mr$Trend == "quadratic" & mr$Method == "REML", ]          # the two REML solutions
+q_l <- qr[qr$Source == "likfit", ]; q_o <- qr[qr$Source == "own", ]
+close <- function(a, b) abs(a / b - 1) < 0.1
+q_ci <- ci[ci$trend == "Quadratic trend" & ci$method == "REML", ]
+```
+
+*For REML, `geoR` may add a different constant to the log-likelihood, so only the estimates should be compared between the two sources. The last column is the ratio $\hat\sigma^2/\hat\phi$.*
+
+**Interpretation: why ML and REML differ.** For the exponential model, the variogram is, for $h > 0$,
+
+$$\gamma(h) = \tau^2 + \sigma^2\left[1 - \exp\left(-\frac{h}{\phi}\right)\right].$$
+
+If $\phi$ is large compared with the distances between the wells, $\exp(-h/\phi) \approx 1 - h/\phi$, and therefore
+
+$$\gamma(h) \approx \tau^2 + \frac{\sigma^2}{\phi}\,h.$$
+
+Over the observed distances, the variogram is then almost a straight line: the data determine its intercept $\tau^2$ and its slope $\sigma^2/\phi$, but not $\sigma^2$ and $\phi$ separately. Multiplying $\sigma^2$ and $\phi$ by the same factor hardly changes the likelihood, which is almost flat along a ridge in this region of the parameter space.
+
+The two REML solutions for the quadratic trend show this ridge. `likfit` gives $\hat\sigma^2$ = `r format(round(q_l$sigma2, 1), big.mark = ",")` and $\hat\phi$ = `r round(q_l$phi, 1)`, and our code gives $\hat\sigma^2$ = `r format(round(q_o$sigma2, 1), big.mark = ",")` and $\hat\phi$ = `r round(q_o$phi, 1)``r if (isTRUE(own_reml_q$phi_at_bound)) ", which is the upper limit of our search interval for the range" else ""`. The individual estimates are `r if (close(q_l$phi, q_o$phi)) "similar" else "very different"`, but the ratios $\hat\sigma^2/\hat\phi$ (`r round(q_l[["sigma2/phi"]], 1)` and `r round(q_o[["sigma2/phi"]], 1)`) and the nuggets (`r format(round(q_l$tau2, 1), big.mark = ",")` and `r format(round(q_o$tau2, 1), big.mark = ",")`) are `r if (close(q_l[["sigma2/phi"]], q_o[["sigma2/phi"]]) && close(q_l$tau2, q_o$tau2)) "almost the same" else "closer than the individual estimates"`. The two optimisers stopped at different points of the same ridge, where the data only fix $\tau^2$ and $\sigma^2/\phi$. `r rq <- reml_q[reml_q$convergence %in% 0, ]; near <- sum(abs(rq$phi / starts$phi[reml_q$convergence %in% 0] - 1) < 0.05); paste0("The same happens inside likfit itself (Section 1.2): with REML, its ", nrow(rq), " runs reach log-likelihoods within ", round(diff(range(rq$logLik)), 2), " of each other, but with ranges from ", round(min(rq$phi), 1), " to ", round(max(rq$phi), 1), ", and ", near, " of them stop within 5 % of their starting value, because along the ridge the optimiser finds almost no slope to follow.")` The profile likelihood gives the same message: with REML and the quadratic trend, the approximate 95 % interval for $\phi$ goes from `r round(q_ci$low, 1)` to `r if (isTRUE(q_ci[["Reaches the end of the grid"]])) "the end of the grid" else round(q_ci$high, 1)`, so the data do not support a precise estimate of $\phi$.
+
+ML and REML optimise different criteria (REML accounts for the estimation of the trend coefficients in a different way), so their estimates need not coincide. Here the weak identification of the range under REML makes the difference particularly large. A convergence code of 0 only means that the stopping criterion of the optimiser was met: it does not show that the maximum is unique, well identified or global. **The large REML range is therefore not a precise estimate of $\phi$, and we do not interpret it.** `r ml_ok <- with(mr[mr$Method == "ML", ], abs(phi[Source == "likfit"] / phi[Source == "own"] - 1) < 0.05); if (all(ml_ok)) "With ML, likfit and our code give the same estimates for both trends." else "With ML, likfit and our code do not give the same estimates for every trend; the solution with the highest likelihood is used."` For these reasons, the final model is chosen on the quality of the predictions (next section) rather than on the covariance parameters.
+
+## 1.4 Comparison of the models for prediction
+
+We now compare the 10 models by leave-one-out cross-validation: each well is removed in turn and predicted by universal kriging from the other `r n - 1`, with the ML estimates of the model. Since the observed values contain the measurement error, the predictive distribution is the one of a **new observation** (variance of the latent process plus the nugget $\tau^2$). We use:
+
+- **RMSE** and **MAE**: size of the errors;
+- **CRPS** (continuous ranked probability score): compares the whole Gaussian predictive distribution with the observed value; it is in the units of the data and reduces to the absolute error when the distribution is a point;
+- **logarithmic score**: minus the log of the predictive density at the observed value; it strongly penalises observations that the model considered very unlikely;
+- the **coverage** of the 95 % prediction intervals.
+
+CRPS and log score are proper scoring rules: on average they are best when the predictive distribution is the true one. For all scores, smaller is better (except the coverage, which should be close to 95 %).
+
+```{r}
+#| label: loo-compare
+pars_of <- function(m) {
+  o <- best_row(own[[m]]); j <- match(sub("^(1st|2nd) ", "", m), cands$label)
+  list(model = cands$cov[j], kappa = cands$kappa[j], phi = o$phi, sigma2 = o$sigma2,
+       tau2 = o$tau2, logLik = o$logLik)
+}
+cv_all <- list()
+comp <- do.call(rbind, lapply(names(own), function(m) {
+  p <- pars_of(m); tr <- substr(m, 1, 3)
+  l <- loo_uk(p, tr); cv_all[[m]] <<- l
+  s <- sqrt(l$var_obs); e <- z - l$pred
+  data.frame(Trend = ifelse(tr == "1st", "linear", "quadratic"),
+             Covariance = sub("^(1st|2nd) ", "", m),
+             AIC = -2 * p$logLik + 2 * (ncol(trend_mat(coords, tr)) + 3),
+             RMSE = sqrt(mean(e^2)), MAE = mean(abs(e)),
+             CRPS = mean(crps_norm(z, l$pred, s)), LogS = mean(logs_norm(z, l$pred, s)),
+             `Coverage 95 %` = 100 * mean(abs(e / s) < 1.96), check.names = FALSE)
+}))
+knitr::kable(comp[order(comp$CRPS), ], digits = 2, row.names = FALSE)
+```
+
+*Leave-one-out scores of the 10 models, sorted by CRPS. The AIC is given for comparison.*
+
+To choose the final model we use the CRPS. Models whose mean CRPS is within 1 % of the best one are considered close, and among them we prefer the **linear trend**, which has 3 fewer parameters (parsimony).
+
+```{r}
+#| label: choice
+eq   <- comp[comp$CRPS <= 1.01 * min(comp$CRPS), ]
+pick <- if (any(eq$Trend == "linear")) eq[eq$Trend == "linear", ] else eq
+pick <- pick[which.min(pick$CRPS), ]
+final_trend <- ifelse(pick$Trend == "linear", "1st", "2nd")
+final_name  <- paste(final_trend, pick$Covariance)
+p_fin <- pars_of(final_name)
+
+# paired comparison of the two trends with the chosen covariance
+other <- paste(ifelse(final_trend == "1st", "2nd", "1st"), pick$Covariance)
+crps_i <- function(m) crps_norm(z, cv_all[[m]]$pred, sqrt(cv_all[[m]]$var_obs))
+d_crps <- crps_i(final_name) - crps_i(other)
+w_p    <- wilcox.test(d_crps)$p.value
+d_mean <- mean(d_crps)
+d_pct  <- 100 * abs(d_mean) / mean(crps_i(final_name))
+other_name <- ifelse(final_trend == "1st", "quadratic", "linear")
+```
+
+The best CRPS is obtained by the `r with(comp[which.min(comp$CRPS), ], paste(Trend, "trend with the", Covariance, "covariance"))`. `r nrow(eq)` model(s) are within 1 % of it, and the final model is the **`r pick$Trend` trend with the `r pick$Covariance` covariance**. With this covariance, the mean CRPS of the `r other_name` trend is `r if (d_mean < 0) "higher" else "lower"` by `r round(abs(d_mean), 2)`, i.e. `r round(d_pct, 1)` % of the mean CRPS of the final model. `r if (d_mean < 0) paste0("The ", pick$Trend, " trend is therefore both slightly better in prediction and simpler.") else paste0("This difference is small, and the ", pick$Trend, " trend is preferred because it is simpler.")` The choice rests on this small CRPS difference and on parsimony.
+
+As an exploratory check, a paired Wilcoxon test on the well-by-well CRPS differences gives p = `r signif(w_p, 2)`. This test is only indicative: the leave-one-out score differences are not independent (each well is predicted from the same other wells), and a non-significant result does not prove that the two trends are equivalent. It is therefore not used as the justification of the choice. The AIC preferred the `r with(comp[which.min(comp$AIC), ], paste(Trend, "trend with the", Covariance, "covariance"))`: the AIC measures the fit to the data, while the cross-validation measures the quality of the predictions, which is our goal.
+
+## 1.5 The final model
+
+```{r}
+#| label: final-model
+knitr::kable(data.frame(Trend = pick$Trend, Covariance = pick$Covariance,
+                        sigma2 = p_fin$sigma2, phi = p_fin$phi, tau2 = p_fin$tau2,
+                        `Nugget share (%)` = 100 * p_fin$tau2 / (p_fin$tau2 + p_fin$sigma2),
+                        check.names = FALSE), digits = 1, row.names = FALSE)
+
+v_res <- variog(wolfcamp, trend = final_trend, max.dist = md, messages = FALSE)
+hh <- seq(0, md, length.out = 200)
+plot(v_res, main = "Empirical variogram of the residuals and fitted model",
+     ylim = c(0, 1.1 * max(v_res$v, p_fin$sigma2 + p_fin$tau2)))
+lines(hh, p_fin$tau2 + p_fin$sigma2 * (1 - corr_fun(hh, p_fin$model, p_fin$phi, p_fin$kappa)),
+      col = "firebrick", lwd = 2)
+```
+
+*Points: empirical variogram of the residuals of the trend (least squares). Line: variogram of the final model, $\tau^2 + \sigma^2(1 - \rho(h))$, with the ML estimates. The line is not fitted to the points, it is only a visual check.*
+
+### Gaussianity of the detrended data
+
+Kriging intervals rely on the Gaussian assumption, so we check it on the data without the trend. The detrended values $z - X\hat\beta$ are **spatially correlated**, so they are not an independent sample, and a normal QQ-plot of them can look wrong even if the model is right. We therefore also look at the **decorrelated residuals**: with $\Sigma = LL'$ (Cholesky decomposition), $e = L^{-1}(z - X\hat\beta)$ should be approximately independent $N(0, 1)$ if the model is correct.
+
+```{r}
+#| label: gaussianity
+#| fig-width: 10
+#| fig-height: 3.6
+Xf <- trend_mat(coords, final_trend)
+Sf <- p_fin$sigma2 * corr_fun(D, p_fin$model, p_fin$phi, p_fin$kappa) + diag(p_fin$tau2, n)
+Lf <- t(chol(Sf))
+bf <- solve(crossprod(Xf, solve(Sf, Xf)), crossprod(Xf, solve(Sf, z)))
+r_det <- c(z - Xf %*% bf)                  # detrended values (still correlated)
+e_dec <- c(forwardsolve(Lf, r_det))        # decorrelated residuals
+
+par(mfrow = c(1, 3))
+hist(r_det, breaks = 15, main = "Detrended values", xlab = "z - trend", col = "grey85")
+qqnorm(r_det, main = "QQ-plot, detrended"); qqline(r_det, col = "firebrick")
+qqnorm(e_dec, main = "QQ-plot, decorrelated"); qqline(e_dec, col = "firebrick")
+sw <- shapiro.test(e_dec)
+```
+
+*Left: histogram of the detrended values. Middle: their normal QQ-plot. Right: QQ-plot of the decorrelated residuals, which are approximately independent under the model.*
+
+The Shapiro-Wilk test on the decorrelated residuals gives p = `r signif(sw$p.value, 2)`. This test is only indicative: the residuals are computed with estimated parameters, and with `r n` points it has limited power. The QQ-plots are the main tool: points close to the line support the Gaussian assumption, and departures in the tails would make the 95 % intervals less reliable there.
+
+# Part 2: kriging in the likelihood framework
+
+## Prediction grid
+
+We predict on a regular 50 × 50 grid and keep only the points inside the convex hull of the wells, to avoid extrapolating.
+
+```{r}
+#| label: grid
+gx <- seq(min(coords[, 1]), max(coords[, 1]), length.out = 50)
+gy <- seq(min(coords[, 2]), max(coords[, 2]), length.out = 50)
+pred_grid <- expand.grid(x = gx, y = gy)
+hull   <- st_convex_hull(st_union(st_as_sf(as.data.frame(coords), coords = 1:2)))
+inside <- lengths(st_within(st_as_sf(pred_grid, coords = 1:2), hull)) > 0
+g_in   <- as.matrix(pred_grid[inside, ])
+```
+
+## Universal kriging and choice of the predictive variance
+
+We apply the universal kriging formulas of the course with the ML estimates of the final model (plug-in). The predictor is the same for the two possible targets, but the variance is not:
+
+- **latent process** $S(s_0) = X(s_0)\beta + W(s_0)$: the "true" water level without measurement error. Variance = kriging variance;
+- **new observation** $Z(s_0) = S(s_0) + \varepsilon(s_0)$: what a new well would measure. Variance = kriging variance $+ \tau^2$.
+
+The cross-validation compares predictions with **observed** values, which contain the measurement error, so it must use the variance of a new observation. We use the same target for the maps, so the intervals on the maps are those checked by the cross-validation.
+
+```{r}
+#| label: kriging
+kr <- uk(Xf, z, coords, trend_mat(g_in, final_trend), g_in, p_fin)
+
+# check against geoR's krige.conv with the same parameters
+kc_chk <- tryCatch({
+  kc <- krige.conv(wolfcamp, locations = g_in,
+          krige = krige.control(trend.d = final_trend, trend.l = final_trend,
+                                cov.model = p_fin$model, kappa = p_fin$kappa,
+                                cov.pars = c(p_fin$sigma2, p_fin$phi), nugget = p_fin$tau2),
+          output = output.control(messages = FALSE))
+  c(pred = max(abs(kc$predict - kr$pred)),
+    var_latent = max(abs(kc$krige.var - kr$var_latent)),
+    var_obs = max(abs(kc$krige.var - kr$var_obs)))
+}, error = function(e) NULL)
+if (!is.null(kc_chk)) knitr::kable(t(kc_chk), digits = 3,
+  caption = "Largest absolute difference between krige.conv and our formulas")
+```
+
+`r if (!is.null(kc_chk)) paste0("Our predictions agree with krige.conv (largest difference ", signif(kc_chk['pred'], 2), "). ", if (p_fin$tau2 < 1) "Since the estimated nugget is almost 0, the two variances cannot be told apart here." else paste0("The variance returned by krige.conv with these settings is the one of the ", ifelse(kc_chk['var_latent'] < kc_chk['var_obs'], "latent process (without the nugget)", "new observation (with the nugget)"), ", as shown by the smaller difference in the table, so for a new observation the nugget has to be added.")) else "The comparison with krige.conv did not run."`
+
+## Maps
+
+```{r}
+#| label: maps
+#| fig-width: 11
+#| fig-height: 4.2
+sd_obs <- sqrt(kr$var_obs)
+mp <- rbind(data.frame(g_in, value = kr$pred,                 what = "Prediction"),
+            data.frame(g_in, value = kr$pred - 1.96 * sd_obs, what = "Lower bound (95 %)"),
+            data.frame(g_in, value = kr$pred + 1.96 * sd_obs, what = "Upper bound (95 %)"))
+mp$what <- factor(mp$what, levels = c("Lower bound (95 %)", "Prediction", "Upper bound (95 %)"))
+wells <- data.frame(x = coords[, 1], y = coords[, 2])
+
+ggplot(mp, aes(x, y, fill = value)) + geom_raster() +
+  geom_point(data = wells, aes(x, y), inherit.aes = FALSE, size = 0.6) +
+  facet_wrap(~ what) + coord_equal() +
+  scale_fill_viridis_c(name = "Piezometric\nhead") +
+  labs(x = "x", y = "y") + theme_minimal()
+```
+
+*Prediction and pointwise 95 % prediction interval for a new observation. The three maps share the same colour scale, so they can be compared directly. Dots: wells.*
+
+```{r}
+#| label: map-sd
+#| fig-width: 5.5
+#| fig-height: 4.2
+ggplot(data.frame(g_in, sd = sd_obs), aes(x, y, fill = sd)) + geom_raster() +
+  geom_point(data = wells, aes(x, y), inherit.aes = FALSE, size = 0.6) +
+  coord_equal() + scale_fill_viridis_c(name = "Prediction\nstd. dev.", option = "magma") +
+  labs(x = "x", y = "y") + theme_minimal()
+```
+
+*Prediction standard deviation for a new observation. It cannot go below $\tau$ = `r round(sqrt(p_fin$tau2), 1)`, the standard deviation of the measurement error.*
+
+The predictions go from `r round(min(kr$pred))` to `r round(max(kr$pred))`. The width of the 95 % intervals goes from `r round(min(2 * 1.96 * sd_obs))` to `r round(max(2 * 1.96 * sd_obs))`: narrowest near the wells, widest in the areas without wells.
+
+## Calibration of the final model
+
+We check the predictive variance of the final model with the leave-one-out results. If it is correct, the standardised errors $(z_i - \hat z_i)/\sigma_i$ have a mean close to 0, a standard deviation close to 1, and 95 % of them are within ±1.96. We compare the two variances discussed above.
+
+```{r}
+#| label: calibration
+lf_cv <- cv_all[[final_name]]
+calib <- function(v, lab) { s <- sqrt(v); u <- (z - lf_cv$pred) / s
+  data.frame(Variance = lab, `Mean std. error` = mean(u), `SD std. error` = sd(u),
+             `Coverage 95 %` = 100 * mean(abs(u) < 1.96),
+             CRPS = mean(crps_norm(z, lf_cv$pred, s)), LogS = mean(logs_norm(z, lf_cv$pred, s)),
+             check.names = FALSE) }
+knitr::kable(rbind(calib(lf_cv$var_obs, "new observation (with nugget)"),
+                   calib(lf_cv$var_latent, "latent process (without nugget)")),
+             digits = 2, row.names = FALSE)
+ref <- sqrt(mean((z - (sum(z) - z) / (n - 1))^2))
+```
+
+*Calibration of the leave-one-out predictions of the final model with the two possible variances.*
+
+With the variance of a new observation, the standard deviation of the standardised errors is `r round(sd((z - lf_cv$pred) / sqrt(lf_cv$var_obs)), 2)` and the coverage is `r round(100 * mean(abs((z - lf_cv$pred) / sqrt(lf_cv$var_obs)) < 1.96))` %. With the variance of the latent process, the coverage is `r round(100 * mean(abs((z - lf_cv$pred) / sqrt(lf_cv$var_latent)) < 1.96))` %. `r if (p_fin$tau2 / (p_fin$tau2 + p_fin$sigma2) > 0.01) "This variance leaves out the measurement error, so it is too small for the target of the cross-validation and only the first row should be used." else "Here the nugget is almost 0, so the two variances are almost equal; in general only the variance of a new observation is consistent with the cross-validation."` For reference, the RMSE of the final model (`r round(sqrt(mean((z - lf_cv$pred)^2)), 1)`) can be compared with the RMSE obtained by predicting each well with the mean of the others (`r round(ref, 1)`).
+
+## Limitations
+
+- The parameters are estimated and then used as if they were known (plug-in), so the prediction intervals do not include their uncertainty; given the weak identifiability of the range seen in Section 1.3, this uncertainty can matter, and the Bayesian approach of the course (`krige.bayes`) would take it into account.
+- In the cross-validation the parameters are not re-estimated without each well, so the scores can be slightly optimistic; this affects all models in the same way.
+- The model assumes a Gaussian, stationary and isotropic process around the trend, and the comparison rests on `r n` wells.
