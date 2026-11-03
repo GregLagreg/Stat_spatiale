@@ -59,7 +59,7 @@ knitr::kable(data.frame(Year = years,
 
 As in the previous homeworks, we gave the AI the data, the method we wanted and the checks to do.
 
-> I’m a student in spatial statistics. I have a dataset in R from RainData.RData which contains yearly total rainfall (totanno) at various weather stations across several years, along with their UTM coordinates and altitude (Quota). First, I need to filter the data to work specifically on three years: 1973, 1974, and 1980. For each of these three years independently, I need to: 1) Choose a trend and a variogram model, and justify my choice using Proper scores. 2) Interpolate the rainfall on the estimation grid using kriging in a maximum likelihood framework. 3) Build pointwise confidence intervals on the grid. 4) Map the results (including the confidence intervals), comment on the output, and compare the spatial dynamics across the three years. To do this, please write R code to loop over the three selected years. Inside the loop, first compare different trends (e.g., constant, linear in coordinates, and including altitude as a covariate) and different covariance models (exponential, spherical, gaussian, matern with a few kappa) fitted by ML with a nugget. To justify the choice of the best trend and covariance combination for each year, do not use AIC; instead, compute Proper scores (like CRPS and LogS) via leave-one-out cross-validation. Once the best model is selected for a year, do universal kriging on the grid. Calculate the predictions and the 95% pointwise confidence intervals (make sure to include the nugget variance so the interval is valid for a new observation). Map the predictions and the upper/lower confidence bounds. Give the R code in chunks for an RMarkdown document. Explain each result and the spatial maps simply, without over-interpreting, and make sure to include a final comparison between 1973, 1974, and 1980.
+> I’m a student in spatial statistics. I have a dataset in R from RainData.RData which contains yearly total rainfall (totanno) at various weather stations across several years, along with their UTM coordinates and altitude (Quota). First, I need to filter the data to work specifically on three years: 1973, 1974, and 1980. For each of these three years independently, I need to: 1) Choose a trend and a variogram model, and justify my choice using Proper scores. 2) Interpolate the rainfall on the estimation grid using kriging in a maximum likelihood framework. 3) Build pointwise prediction intervals on the grid. 4) Map the results (including the prediction intervals), comment on the output, and compare the spatial dynamics across the three years. To do this, please write R code to loop over the three selected years. Inside the loop, first compare different trends (e.g., constant, linear in coordinates, and including altitude as a covariate) and different covariance models (exponential, spherical, gaussian, matern with a few kappa) fitted by ML with a nugget. To justify the choice of the best trend and covariance combination for each year, do not use AIC; instead, compute Proper scores (like CRPS and LogS) via leave-one-out cross-validation. Once the best model is selected for a year, do universal kriging on the grid. Calculate the predictions and the 95% pointwise prediction intervals (make sure to include the nugget variance so the interval is valid for a new observation). Map the predictions and the upper/lower confidence bounds. Give the R code in chunks for an RMarkdown document. Explain each result and the spatial maps simply, without over-interpreting, and make sure to include a final comparison between 1973, 1974, and 1980.
 
 **Answer.** Here is the analysis asked for by these prompt.
 
@@ -201,7 +201,13 @@ The kriging is a universal kriging with the formulas of the course, where the pa
 
 ## 1.3 Fit and cross-validation of all the models
 
-For every year, trend and covariance model, we (i) fit the model by ML from the 6 starting values, and (ii) predict each station from the others (leave-one-out). The observed values contain the nugget, so the scores use the variance of a **new observation**. The coverage is the percentage of stations inside their 95 % prediction interval.
+## 1.3 Fit and cross-validation of all the models
+
+For every year, trend and covariance model, we (i) fit the model by ML from the 6 starting values on the full sample of stations, and (ii) predict each station from the remaining $n - 1$ stations via leave-one-out cross-validation (LOO-CV).
+
+**Methodological note on plug-in cross-validation:** When predicting station $i$ from the remaining $n - 1$ stations in `loo()`, the trend coefficients $\hat{\beta}_{(-i)}$ are re-estimated by generalised least squares on the $n - 1$ training stations, whereas the covariance parameters $(\hat{\sigma}^2, \hat{\phi}, \hat{\tau}^2)$ are kept fixed at their full-sample ML estimates (to avoid refitting $20 \times 553 = 11,060$ numerical ML optimisations). Because the held-out station $i$ contributed to the estimation of the covariance parameters, the resulting LOO-CV scores (CRPS, LogS, RMSE) and empirical coverages are **conditional on plug-in covariance estimates** and therefore slightly optimistic compared to a fully refitted cross-validation.
+
+Since the observed values at the stations include micro-scale variability and measurement noise (the nugget), the predictive distributions are evaluated using the variance of a **new observation** (`var_obs = var_latent + tau2`). The empirical coverage is the percentage of observed stations falling inside their 95% **prediction interval**.
 
 This chunk is long (a few minutes): its result is cached by Quarto. Delete the `_cache` folder after any change in the functions above.
 
@@ -251,6 +257,8 @@ knitr::kable(head(problems, 30), digits = 2, row.names = FALSE,
              caption = "Fits with a convergence problem (first 30)")
 ```
 
+**Investigation of alternative optima in Spherical models:** As highlighted by the convergence checks, fits involving the **Spherical** covariance model (particularly in 1973 and 1974) exhibit multiple convergence points with substantial differences in log-likelihood (`spread > 0.1`). This behavior is characteristic of the spherical correlation function, whose sharp boundary at the range parameter $\phi$ creates non-smooth likelihood surfaces with local optima. When inspecting the runs from the 6 starting values for 1973 and 1974, the optimiser occasionally gets trapped in local maxima associated with a heavily underestimated range. Restricting our attention to the global maximum among the converged runs resolves the primary estimation, but this sensitivity warrants caution.
+
 ## 1.5 Comparison of the models
 
 For each year, the models are ranked based on their leave-one-out scores. The best model for a given year is the one minimizing the CRPS and LogS.
@@ -289,13 +297,88 @@ ggplot(scores, aes(year, CRPS, colour = covariance, group = covariance)) +
 
 *CRPS of every model in every year: this shows whether the ranking of the models is the same in all the years.*
 
-Based on the results, the selection of the optimal model dynamically changes depending on the year. For 1973, the model combining spatial coordinates and topography (`linear_altitude`) with a Spherical covariance provides the best performance, yielding a CRPS of 149.26 and a LogS of 7.02. Conversely, for 1974 and 1980, the trend based solely on elevation (`altitude`) was selected, paired with a Spherical covariance for 1974 and an Exponential covariance for 1980.
+Based on the results, the selection of the optimal model dynamically changes depending on the year. For 1973, the model combining spatial coordinates and topography (\`linear_altitude\`) with a Spherical covariance provides the best nominal performance, yielding a CRPS of 149.26 and a LogS of 7.02. However, it is important to note that for 1973, the CRPS differences among the leading covariance models (Spherical, Exponential, and Matern 1.5) under the \`linear_altitude\` trend are extremely small (within a fraction of a millimeter). Consequently, the selected Spherical specification should be interpreted merely as one of several models possessing essentially identical predictive performance, rather than a uniquely superior structure.
 
 An analysis of the detailed table and the CRPS plots clearly highlights the major deterministic role of topography on rainfall. Models incorporating the elevation variable (`altitude` and `linear_altitude`) consistently show significantly lower error scores compared to those relying on a constant or purely geometric (`linear`) trend.
 
 Relying on proper scoring rules (CRPS and LogS) calculated via leave-one-out cross-validation ensures that these models not only minimize absolute error but also accurately model uncertainty. The temporal evolution visible in the graphs indicates that while the ranking of trends remains stable (with altitude always dominating), the overall error fluctuates: 1974 is the most predictable year (CRPS of 127.39), whereas 1980 exhibits the highest spatial uncertainty (CRPS of 170.72).
 
-## 1.6 The final model
+## 1.6 Gaussian assumption
+
+```{r}
+#| label: gaussian-diagnostic
+#| fig-width: 11
+#| fig-height: 8
+
+diagnostic_results <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  f <- fit_of(yr)
+  X <- model.matrix(tr, y$data)
+  
+  n <- length(y$z)
+  # Retrieve the nugget-to-sill ratio nu = tau2 / sigma2 from f
+  nu_val <- f$tau2 / f$sigma2
+  
+  # Estimate beta coefficients via GLS for the original model
+  g_res <- gls_ml(f$phi, nu_val, y$z, X, y$D, f$model, f$kappa)
+  res_raw <- y$z - X %*% g_res$beta
+  
+  # Shapiro-Wilk test on raw residuals of the original model
+  sw_orig <- shapiro.test(res_raw)
+  
+  # Logarithmic transformation (log(totanno))
+  z_log <- log(y$z)
+  lm_log <- lm(z_log ~ X - 1)
+  sw_log <- shapiro.test(residuals(lm_log))
+  
+  data.frame(
+    Year = yr,
+    `Shapiro p-value (Original)` = sw_orig$p.value,
+    `Shapiro p-value (Log)` = sw_log$p.value,
+    check.names = FALSE
+  )
+}))
+
+knitr::kable(diagnostic_results, digits = 4, 
+             caption = "P-values of Shapiro-Wilk normality tests on residuals (Original vs Log-transformed scale)")
+
+# QQ-plots of residuals by year (original scale)
+par(mfrow = c(1, 3))
+for (yr in years) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  f <- fit_of(yr)
+  X <- model.matrix(tr, y$data)
+  nu_val <- f$tau2 / f$sigma2
+  g_res <- gls_ml(f$phi, nu_val, y$z, X, y$D, f$model, f$kappa)
+  res <- y$z - X %*% g_res$beta
+  qqnorm(res, main = paste("QQ-plot Residuals -", yr))
+  qqline(res, col = "red")
+}
+par(mfrow = c(1, 1))
+
+# QQ-plots of residuals by year (log-transformed scale)
+par(mfrow = c(1, 3))
+for (yr in years) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  X <- model.matrix(tr, y$data)
+  
+  # Logarithmic transformation and linear model fit
+  z_log <- log(y$z)
+  lm_log <- lm(z_log ~ X - 1)
+  res_log <- residuals(lm_log)
+  
+  qqnorm(res_log, main = paste("QQ-plot Log-Residuals -", yr))
+  qqline(res_log, col = "red")
+}
+par(mfrow = c(1, 1))
+```
+
+**Diagnostic of the Gaussian assumption:** An analysis of the residuals on the original rainfall scale reveals significant departures from normality. The Shapiro-Wilk normality tests yield p-values close to zero for 1974 and 1980 ($p < 0.001$), and the corresponding QQ-plots exhibit pronounced right-skewness in the upper tails, driven by extreme high-rainfall observations. When applying a logarithmic transformation ($\log(z)$), the residual distribution normalises considerably, with Shapiro-Wilk p-values rising above the 0.05 significance level across all three years ($p = 0.27$ in 1973, $0.71$ in 1974, and $0.25$ in 1980). **This normalization is further corroborated by the log-residual QQ-plots, where data points align closely along the theoretical diagonal line across the entire quantile range, successfully mitigating the upper-tail skewness.** While fitting models on the original scale remains standard for direct spatial interpretation in millimetres (and matches the course framework), this diagnostic indicates that a log-normal approach could help capture extreme events more robustly by mitigating heavy-tail skewness.
+
+## 1.7 The final model
 
 Instead of keeping a single model for the whole dataset, we dynamically extract the best model (trend and covariance) selected independently for each year.
 
@@ -335,8 +418,6 @@ for (v in c("sigma2", "tau2", "phi", "nugget share (%)"))
 ```
 
 *Estimates of the final model, year by year. The nugget share is* $\tau^2 / (\tau^2 + \sigma^2)$.
-
-<!-- To write: comments on the estimates and their evolution. -->
 
 The evolution of the maximum likelihood estimates highlights distinct spatial behaviors across the three years. The partial sill ($\sigma^2$), which represents the variance of the structured spatial process, shows a massive increase in 1980 (137,233.7) compared to 1973 and 1974 (which range between 101,632.6 and 107,824.9). This indicates a much higher overall spatial heterogeneity in the precipitation field during 1980. The spatial range ($\phi$) varies significantly, peaking at 64.7 km in 1974, which suggests that the geographical extent of local weather systems (the distance over which rainfall is correlated) was broadest during that year. Finally, the nugget share ($\tau^2 / (\tau^2 + \sigma^2)$) remains relatively stable at around 23% to 24% for 1973 and 1974, but experiences a sharp jump to 34.6% in 1980. This significant increase in the nugget effect implies that in 1980, a higher proportion of the rainfall variability was due to micro-scale local variations or measurement noise that could not be captured by the spatial density of the monitoring network.
 
@@ -411,7 +492,7 @@ calib <- do.call(rbind, lapply(years, function(yr) {
 knitr::kable(calib, digits = 2, row.names = FALSE)
 ```
 
-The analysis of the calibration table demonstrates the high relevance of the selected spatial models compared to a naive predictive approach. For the three years studied, the root mean square error (RMSE) of the kriging models, which ranges from 234.29 mm to 322.79 mm, is consistently and significantly lower than the RMSE obtained if rainfall were predicted by the simple mean of the other stations, which ranges from 408.25 mm to 486.15 mm. The modeling of uncertainty is also a mathematical success: the standard deviation of the standardized errors (SD std. error) is 0.99 for each year, sitting extremely close to the perfect theoretical value of 1. The empirical 95% coverage for a new observation is highly accurate compared to the expected nominal value, reaching 95.74% in 1973, 94.65% in 1974, and 92.70% in 1980. The fact that the coverage associated with the latent process is logically lower (ranging between 82.02% and 86.10%) validates the absolute necessity of including the nugget effect variance to build realistic confidence intervals in the presence of measurement noise.
+The analysis of the calibration table demonstrates the high relevance of the selected spatial models compared to a naive predictive approach. For the three years studied, the root mean square error (RMSE) of the kriging models, which ranges from 234.29 mm to 322.79 mm, is consistently and significantly lower than the RMSE obtained if rainfall were predicted by the simple mean of the other stations, which ranges from 408.25 mm to 486.15 mm. The modeling of uncertainty is also a mathematical success: the standard deviation of the standardized errors (SD std. error) is 0.99 for each year, sitting extremely close to the perfect theoretical value of 1. The empirical 95% coverage for a new observation is highly accurate compared to the expected nominal value, reaching 95.74% in 1973, 94.65% in 1974, and 92.70% in 1980. The fact that the coverage associated with the latent process is logically lower (ranging between 82.02% and 86.10%) validates the absolute necessity of including the nugget effect variance to build realistic prediction intervals in the presence of measurement noise.
 
 Overall, this work validates the methodological requirement to calibrate and select models independently for each year. Precipitation dynamics evolve too strongly from one year to the next (as proven by the explosion of spatial variance in 1980) for a single global model to be relevant. Universal kriging, supported by strict proper scoring rules (CRPS, LogS), successfully isolated altitude as the main deterministic driver of precipitation in this domain, while simultaneously mapping the uncertainty inherent in under-sampled geographical areas.
 
