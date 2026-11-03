@@ -33,11 +33,11 @@ years <- c("1973", "1974", "1980")
 yrs <- yrs[years]
 ```
 
-We work with the annual rainfall (`totanno`, in mm) of `r length(unique(dati$ID))` stations over `r length(years)` years (`r nrow(dati)` measurements). For each year $t$ we use the model of the course:
+We work with the annual rainfall (`totanno`, in mm) of `r length(unique(dati$ID))` stations over `r length(years)` years (553 measurements). For each year $t$ we use the model of the course:
 
 $$Z_t(s) = X(s)\beta_t + W_t(s) + \varepsilon_t(s)$$
 
-where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$ a Gaussian process with partial sill $\sigma^2_t$ and range $\phi_t$, and $\varepsilon_t(s)$ the nugget, with variance $\tau^2_t$. The parameters are estimated by maximum likelihood (ML), **year by year**.
+where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$ a Gaussian process with partial sill $\sigma^2_t$ and range $\phi_t$, and $\varepsilon_t(s)$ the nugget, with variance $\tau^2_t$. The parameters are estimated by maximum likelihood (ML).
 
 The steps are:
 
@@ -60,8 +60,6 @@ knitr::kable(data.frame(Year = years,
 As in the previous homeworks, we gave the AI the data, the method we wanted and the checks to do.
 
 > I’m a student in spatial statistics. I have a dataset in R from RainData.RData which contains yearly total rainfall (totanno) at various weather stations across several years, along with their UTM coordinates and altitude (Quota). First, I need to filter the data to work specifically on three years: 1973, 1974, and 1980. For each of these three years independently, I need to: 1) Choose a trend and a variogram model, and justify my choice using Proper scores. 2) Interpolate the rainfall on the estimation grid using kriging in a maximum likelihood framework. 3) Build pointwise prediction intervals on the grid. 4) Map the results (including the prediction intervals), comment on the output, and compare the spatial dynamics across the three years. To do this, please write R code to loop over the three selected years. Inside the loop, first compare different trends (e.g., constant, linear in coordinates, and including altitude as a covariate) and different covariance models (exponential, spherical, gaussian, matern with a few kappa) fitted by ML with a nugget. To justify the choice of the best trend and covariance combination for each year, do not use AIC; instead, compute Proper scores (like CRPS and LogS) via leave-one-out cross-validation. Once the best model is selected for a year, do universal kriging on the grid. Calculate the predictions and the 95% pointwise prediction intervals (make sure to include the nugget variance so the interval is valid for a new observation). Map the predictions and the upper/lower confidence bounds. Give the R code in chunks for an RMarkdown document. Explain each result and the spatial maps simply, without over-interpreting, and make sure to include a final comparison between 1973, 1974, and 1980.
-
-**Answer.** Here is the analysis asked for by these prompt.
 
 # Part 1: choice of the model
 
@@ -209,8 +207,6 @@ For every year, trend and covariance model, we (i) fit the model by ML from the 
 
 Since the observed values at the stations include micro-scale variability and measurement noise (the nugget), the predictive distributions are evaluated using the variance of a **new observation** (`var_obs = var_latent + tau2`). The empirical coverage is the percentage of observed stations falling inside their 95% **prediction interval**.
 
-This chunk is long (a few minutes): its result is cached by Quarto. Delete the `_cache` folder after any change in the functions above.
-
 ```{r}
 #| label: compare
 #| cache: true
@@ -310,6 +306,16 @@ Relying on proper scoring rules (CRPS and LogS) calculated via leave-one-out cro
 #| fig-width: 11
 #| fig-height: 8
 
+fit_of <- function(yr) {
+  best <- best_models[best_models$year == yr, ]
+  fits[[paste(yr, best$trend, best$covariance)]]
+}
+
+trend_of <- function(yr) {
+  best <- best_models[best_models$year == yr, ]
+  trends[[best$trend]]
+}
+
 diagnostic_results <- do.call(rbind, lapply(years, function(yr) {
   y <- yrs[[yr]]
   tr <- trend_of(yr)
@@ -380,20 +386,8 @@ par(mfrow = c(1, 1))
 
 ## 1.7 The final model
 
-Instead of keeping a single model for the whole dataset, we dynamically extract the best model (trend and covariance) selected independently for each year.
-
 ```{r}
 #| label: final-model
-# Fonctions pour extraire dynamiquement le bon ajustement et la bonne tendance par année
-fit_of <- function(yr) {
-  best <- best_models[best_models$year == yr, ]
-  fits[[paste(yr, best$trend, best$covariance)]]
-}
-
-trend_of <- function(yr) {
-  best <- best_models[best_models$year == yr, ]
-  trends[[best$trend]]
-}
 
 par_year <- data.frame(year   = years,
                        n      = sapply(yrs, function(y) length(y$z)),
@@ -460,7 +454,7 @@ ggplot(maps, aes(XUTM, YUTM, colour = pred)) + geom_point(size = 0.7) +
 #| label: maps-sd
 #| fig-width: 11
 #| fig-height: 9
-ggplot(maps, aes(XUTM, YUTM, colour = sd)) + geom_point(size = 0.7) +
+ggplot(maps, aes(XUTM, YUTM, colour = sd)) + geom_point(size = 1.5) +
   facet_wrap(~ year) + coord_equal() +
   scale_colour_viridis_c(name = "Std. dev.\n(mm)", option = "magma") + map_theme
 ```
