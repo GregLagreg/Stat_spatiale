@@ -201,8 +201,6 @@ The kriging is a universal kriging with the formulas of the course, where the pa
 
 ## 1.3 Fit and cross-validation of all the models
 
-## 1.3 Fit and cross-validation of all the models
-
 For every year, trend and covariance model, we (i) fit the model by ML from the 6 starting values on the full sample of stations, and (ii) predict each station from the remaining $n - 1$ stations via leave-one-out cross-validation (LOO-CV).
 
 **Methodological note on plug-in cross-validation:** When predicting station $i$ from the remaining $n - 1$ stations in `loo()`, the trend coefficients $\hat{\beta}_{(-i)}$ are re-estimated by generalised least squares on the $n - 1$ training stations, whereas the covariance parameters $(\hat{\sigma}^2, \hat{\phi}, \hat{\tau}^2)$ are kept fixed at their full-sample ML estimates (to avoid refitting $20 \times 553 = 11,060$ numerical ML optimisations). Because the held-out station $i$ contributed to the estimation of the covariance parameters, the resulting LOO-CV scores (CRPS, LogS, RMSE) and empirical coverages are **conditional on plug-in covariance estimates** and therefore slightly optimistic compared to a fully refitted cross-validation.
