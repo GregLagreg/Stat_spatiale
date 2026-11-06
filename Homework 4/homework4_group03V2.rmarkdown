@@ -1,0 +1,514 @@
+---
+title: "Homework 4"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(ggplot2)
+load("../data/RainData.RData")      # gives `dati` (stations, all years) and `grid` (prediction points)
+
+# Coordinates in km, centred on the stations (better numerical behaviour); altitude in km.
+# The same centring is used for the stations and for the grid.
+x0 <- mean(dati$XUTM); y0 <- mean(dati$YUTM)
+prep <- function(d) transform(d, x = (XUTM - x0) / 1000, y = (YUTM - y0) / 1000, alt = Quota / 1000)
+dati <- prep(dati[!is.na(dati$totanno), ])
+grid <- prep(grid)
+stopifnot(!anyNA(dati[, c("x", "y", "alt")]), !anyNA(grid[, c("x", "y", "alt")]))
+
+# One list per year: data, response, coordinates and matrix of distances between stations
+yrs <- lapply(split(dati, dati$anno), function(d)
+  list(data = d, z = d$totanno, co = as.matrix(d[, c("x", "y")]),
+       D = as.matrix(dist(d[, c("x", "y")]))))
+years <- names(yrs)
+years <- c("1973", "1974", "1980")
+yrs <- yrs[years]
+```
+
+We work with the annual rainfall (`totanno`, in mm) of `r length(unique(dati$ID))` stations over `r length(years)` years (`r nrow(dati)` measurements). For each year $t$ we use the model of the course:
+
+$$Z_t(s) = X(s)\beta_t + W_t(s) + \varepsilon_t(s)$$
+
+where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$ a Gaussian process with partial sill $\sigma^2_t$ and range $\phi_t$, and $\varepsilon_t(s)$ the nugget, with variance $\tau^2_t$. The parameters are estimated by maximum likelihood (ML), **year by year**.
+
+The steps are:
+
+1.  fit by ML every combination of trend and covariance model, in every year, and check the convergence of each fit;
+2.  compare the combinations by leave-one-out cross-validation, with the CRPS averaged over all the years;
+3.  keep **the best model independently for each year** and use it to krige on `grid`.
+
+The number of stations per year is:
+
+```{r}
+#| label: stations
+knitr::kable(data.frame(Year = years,
+                        Stations = sapply(yrs, function(y) length(y$z)),
+                        `Duplicated coordinates` = sapply(yrs, function(y) sum(duplicated(y$co))),
+                        check.names = FALSE), row.names = FALSE)
+```
+
+# AI prompts
+
+As in the previous homeworks, we gave the AI the data, the method we wanted and the checks to do.
+
+> I’m a student in spatial statistics. I have a dataset in R from RainData.RData which contains yearly total rainfall (totanno) at various weather stations across several years, along with their UTM coordinates and altitude (Quota). First, I need to filter the data to work specifically on three years: 1973, 1974, and 1980. For each of these three years independently, I need to: 1) Choose a trend and a variogram model, and justify my choice using Proper scores. 2) Interpolate the rainfall on the estimation grid using kriging in a maximum likelihood framework. 3) Build pointwise prediction intervals on the grid. 4) Map the results (including the prediction intervals), comment on the output, and compare the spatial dynamics across the three years. To do this, please write R code to loop over the three selected years. Inside the loop, first compare different trends (e.g., constant, linear in coordinates, and including altitude as a covariate) and different covariance models (exponential, spherical, gaussian, matern with a few kappa) fitted by ML with a nugget. To justify the choice of the best trend and covariance combination for each year, do not use AIC; instead, compute Proper scores (like CRPS and LogS) via leave-one-out cross-validation. Once the best model is selected for a year, do universal kriging on the grid. Calculate the predictions and the 95% pointwise prediction intervals (make sure to include the nugget variance so the interval is valid for a new observation). Map the predictions and the upper/lower confidence bounds. Give the R code in chunks for an RMarkdown document. Explain each result and the spatial maps simply, without over-interpreting, and make sure to include a final comparison between 1973, 1974, and 1980.
+
+**Answer.** Here is the analysis asked for by these prompt.
+
+# Part 1: choice of the model
+
+## 1.1 Candidate models
+
+```{r}
+#| label: candidates
+# Trends: written as formulas in x, y (coordinates, km) and alt (altitude, km).
+# Add other trends here, for example: quadratic = ~ x + y + I(x^2) + I(x * y) + I(y^2)
+trends <- list(constant        = ~ 1,
+               linear          = ~ x + y,
+               altitude        = ~ alt,
+               linear_altitude = ~ x + y + alt)
+
+# Covariance models (kappa is the smoothness of the Matern model)
+covs <- data.frame(label = c("Exponential", "Spherical", "Gaussian", "Matern 1.5", "Matern 2.5"),
+                   model = c("exponential", "spherical", "gaussian", "matern", "matern"),
+                   kappa = c(0.5, 0.5, 0.5, 1.5, 2.5))
+
+# Starting values of the optimiser: range = 0.1, 0.3 and 1 times half the largest distance,
+# combined with nu = tau2 / sigma2 = 0.1 and 1  ->  6 starting values for every fit
+start_grid <- expand.grid(phi = c(0.1, 0.3, 1), nu = c(0.1, 1))
+```
+
+There are `r length(trends)` trends and `r nrow(covs)` covariance models, so `r length(trends) * nrow(covs)` models per year.
+
+## 1.2 Functions
+
+```{r}
+#| label: functions
+#| code-fold: true
+
+# ---- correlation functions (same parametrisation as geoR) ----
+corr_fun <- function(h, model, phi, kappa) {
+  u <- h / phi
+  switch(model,
+    exponential = exp(-u),
+    spherical   = ifelse(u < 1, 1 - 1.5 * u + 0.5 * u^3, 0),
+    gaussian    = exp(-u^2),
+    matern      = { r <- u^kappa * besselK(u, kappa) / (2^(kappa - 1) * gamma(kappa))
+                    r[u == 0] <- 1
+                    r })
+}
+
+# distances between two sets of points (rows of a and rows of b)
+cross_dist <- function(a, b)
+  sqrt(outer(a[, 1], b[, 1], "-")^2 + outer(a[, 2], b[, 2], "-")^2)
+
+# ---- ML for given phi and nu = tau2 / sigma2 ----
+# The trend coefficients and sigma2 have a closed form (generalised least squares),
+# so only phi and nu have to be searched numerically.
+gls_ml <- function(phi, nu, z, X, D, model, kappa) {
+  n  <- length(z)
+  R  <- chol(corr_fun(D, model, phi, kappa) + diag(nu, n))
+  Xs <- backsolve(R, X, transpose = TRUE)          # X and z "decorrelated"
+  zs <- backsolve(R, z, transpose = TRUE)
+  beta <- solve(crossprod(Xs), crossprod(Xs, zs))
+  s2   <- sum((zs - Xs %*% beta)^2) / n
+  ll   <- -0.5 * (n * log(2 * pi) + 2 * sum(log(diag(R))) + n * log(s2) + n)
+  list(logLik = ll, beta = c(beta), sigma2 = s2)
+}
+
+# ---- ML fit from the 6 starting values; convergence is checked for each one ----
+fit_ml <- function(z, X, D, model, kappa) {
+  maxd   <- max(D)
+  lower  <- log(c(0.005 * maxd, 1e-4))             # bounds of log(phi) and log(nu)
+  upper  <- log(c(5 * maxd, 100))
+  nll <- function(p) {                             # minus the log-likelihood
+    v <- tryCatch(-gls_ml(exp(p[1]), exp(p[2]), z, X, D, model, kappa)$logLik,
+                  error = function(e) 1e10)
+    if (is.finite(v)) v else 1e10
+  }
+  runs <- do.call(rbind, lapply(seq_len(nrow(start_grid)), function(k) {
+    start <- log(c(start_grid$phi[k] * maxd / 2, start_grid$nu[k]))
+    o <- optim(start, nll, method = "L-BFGS-B", lower = lower, upper = upper)
+    data.frame(converged = (o$convergence == 0), logLik = -o$value,
+               phi = exp(o$par[1]), nu = exp(o$par[2]))
+  }))
+  ok <- runs$converged
+  if (!any(ok)) ok <- rep(TRUE, nrow(runs))        # no start converged (n_conv = 0 will show it)
+  best <- runs[ok, ][which.max(runs$logLik[ok]), ] # best likelihood among the converged runs
+  g <- gls_ml(best$phi, best$nu, z, X, D, model, kappa)
+  list(model = model, kappa = kappa, phi = best$phi, sigma2 = g$sigma2,
+       tau2 = best$nu * g$sigma2, logLik = g$logLik,
+       n_conv = sum(runs$converged),               # number of converged starting values
+       spread = if (sum(runs$converged) > 1)       # logLik difference between converged runs
+                  diff(range(runs$logLik[runs$converged])) else NA)
+}
+
+# ---- universal kriging ----
+# S: covariance of the observations (with nugget), C: covariance between the observations
+# and the points to predict (latent process), X0: trend matrix at the points to predict.
+# The parameters p are treated as known. Two variances are returned:
+#  - var_latent: latent process S(s0) = X(s0) beta + W(s0)  (no nugget)
+#  - var_obs   : new observation Z(s0) = S(s0) + eps(s0)    (latent variance + tau2)
+krige_uk <- function(z, X, S, C, X0, p) {
+  Si  <- solve(S)
+  A   <- solve(t(X) %*% Si %*% X)
+  b   <- A %*% t(X) %*% Si %*% z                   # GLS trend coefficients
+  SiC <- Si %*% C
+  R   <- X0 - t(SiC) %*% X
+  v_latent <- p$sigma2 - colSums(C * SiC) + rowSums((R %*% A) * R)
+  v_latent <- pmax(v_latent, 0)                    # avoids tiny negative values (rounding)
+  data.frame(pred = c(X0 %*% b + t(SiC) %*% (z - X %*% b)),
+             var_latent = v_latent, var_obs = v_latent + p$tau2)
+}
+
+# ---- leave-one-out: each station is removed and predicted from the others (p fixed) ----
+loo <- function(z, X, D, p) {
+  C <- p$sigma2 * corr_fun(D, p$model, p$phi, p$kappa)   # latent covariance between stations
+  S <- C + diag(p$tau2, length(z))                       # covariance of the observations
+  do.call(rbind, lapply(seq_along(z), function(i)
+    krige_uk(z[-i], X[-i, , drop = FALSE], S[-i, -i], C[-i, i, drop = FALSE],
+             X[i, , drop = FALSE], p)))
+}
+
+# ---- kriging at the points of a grid g ----
+krige_grid <- function(z, X, co, p, g, trend) {
+  C <- p$sigma2 * corr_fun(cross_dist(co, as.matrix(g[, c("x", "y")])), p$model, p$phi, p$kappa)
+  S <- p$sigma2 * corr_fun(as.matrix(dist(co)), p$model, p$phi, p$kappa) + diag(p$tau2, length(z))
+  krige_uk(z, X, S, C, model.matrix(trend, g), p)
+}
+
+# ---- CRPS of a Gaussian predictive distribution (smaller is better) ----
+crps_norm <- function(y, m, s) {
+  u <- (y - m) / s
+  s * (u * (2 * pnorm(u) - 1) + 2 * dnorm(u) - 1 / sqrt(pi))
+}
+
+# ---- LogS of a Gaussian predictive distribution (smaller is better) ----
+logs_norm <- function(y, m, s) {
+  0.5 * log(2 * pi * s^2) + 0.5 * ((y - m) / s)^2
+}
+```
+
+The kriging is a universal kriging with the formulas of the course, where the parameters are the ML estimates (plug-in). The predictor is the same for the latent process and for a new observation, only the variance changes: the variance of a new observation is the variance of the latent process plus $\tau^2$.
+
+## 1.3 Fit and cross-validation of all the models
+
+For every year, trend and covariance model, we (i) fit the model by ML from the 6 starting values on the full sample of stations, and (ii) predict each station from the remaining $n - 1$ stations via leave-one-out cross-validation (LOO-CV).
+
+**Methodological note on plug-in cross-validation:** When predicting station $i$ from the remaining $n - 1$ stations in `loo()`, the trend coefficients $\hat{\beta}_{(-i)}$ are re-estimated by generalised least squares on the $n - 1$ training stations, whereas the covariance parameters $(\hat{\sigma}^2, \hat{\phi}, \hat{\tau}^2)$ are kept fixed at their full-sample ML estimates (to avoid refitting $20 \times 553 = 11,060$ numerical ML optimisations). Because the held-out station $i$ contributed to the estimation of the covariance parameters, the resulting LOO-CV scores (CRPS, LogS, RMSE) and empirical coverages are **conditional on plug-in covariance estimates** and therefore slightly optimistic compared to a fully refitted cross-validation.
+
+Since the observed values at the stations include micro-scale variability and measurement noise (the nugget), the predictive distributions are evaluated using the variance of a **new observation** (`var_obs = var_latent + tau2`). The empirical coverage is the percentage of observed stations falling inside their 95% **prediction interval**.
+
+This chunk is long (a few minutes): its result is cached by Quarto. Delete the `_cache` folder after any change in the functions above.
+
+```{r}
+#| label: compare
+#| cache: true
+fits   <- list()                                   # one fit per year, trend and covariance
+scores <- list()
+for (yr in years) {
+  y <- yrs[[yr]]
+  for (tr in names(trends)) {
+    X <- model.matrix(trends[[tr]], y$data)
+    for (j in seq_len(nrow(covs))) {
+      f  <- fit_ml(y$z, X, y$D, covs$model[j], covs$kappa[j])
+      cv <- loo(y$z, X, y$D, f)
+      e  <- y$z - cv$pred
+      s  <- sqrt(cv$var_obs)
+      fits[[paste(yr, tr, covs$label[j])]] <- f
+      scores[[length(scores) + 1]] <- data.frame(
+        year = yr, trend = tr, covariance = covs$label[j],
+        n_conv = f$n_conv, spread = f$spread,
+        CRPS = mean(crps_norm(y$z, cv$pred, s)), RMSE = sqrt(mean(e^2)),
+        LogS = mean(logs_norm(y$z, cv$pred, s)),
+        coverage = 100 * mean(abs(e / s) < 1.96))
+    }
+  }
+}
+scores <- do.call(rbind, scores)
+```
+
+## 1.4 Convergence of the ML fits
+
+`n_conv` is the number of starting values (out of `r nrow(start_grid)`) for which the optimiser reports a successful convergence (code 0). Only the converged runs are used to choose the estimates, and `spread` is the difference of log-likelihood between the converged runs of the same fit: a large value means that different starting values reach different optima.
+
+```{r}
+#| label: convergence
+knitr::kable(data.frame(
+  `Fits (year x trend x covariance)`                 = nrow(scores),
+  `Fits with no converged start`                     = sum(scores$n_conv == 0),
+  `Fits with at least one start not converged`       = sum(scores$n_conv < nrow(start_grid)),
+  `Fits where converged starts differ by more than 0.1` = sum(scores$spread > 0.1, na.rm = TRUE),
+  check.names = FALSE), row.names = FALSE)
+
+problems <- scores[scores$n_conv < nrow(start_grid) | (scores$spread > 0.1) %in% TRUE,
+                   c("year", "trend", "covariance", "n_conv", "spread")]
+knitr::kable(head(problems, 30), digits = 2, row.names = FALSE,
+             caption = "Fits with a convergence problem (first 30)")
+```
+
+**Investigation of alternative optima in Spherical models:** As highlighted by the convergence checks, fits involving the **Spherical** covariance model (particularly in 1973 and 1974) exhibit multiple convergence points with substantial differences in log-likelihood (`spread > 0.1`). This behavior is characteristic of the spherical correlation function, whose sharp boundary at the range parameter $\phi$ creates non-smooth likelihood surfaces with local optima. When inspecting the runs from the 6 starting values for 1973 and 1974, the optimiser occasionally gets trapped in local maxima associated with a heavily underestimated range. Restricting our attention to the global maximum among the converged runs resolves the primary estimation, but this sensitivity warrants caution.
+
+## 1.5 Comparison of the models
+
+For each year, the models are ranked based on their leave-one-out scores. The best model for a given year is the one minimizing the CRPS and LogS.
+
+```{r}
+#| label: comparison
+#| results: asis
+# Extract the best model (minimum CRPS) for EACH year
+best_models <- do.call(rbind, lapply(split(scores, scores$year), function(sub) {
+  sub[which.min(sub$CRPS), c("year", "trend", "covariance", "CRPS", "LogS", "RMSE", "coverage")]
+}))
+rownames(best_models) <- NULL
+
+# Table 1: Display only the best models
+cat(knitr::kable(best_models, digits = 2, row.names = FALSE,
+                 caption = "Best model selected independently for each year (minimum CRPS)"),
+    sep = "\n")
+cat("\n\n")
+
+# Sort all tested models by year, and then by CRPS (from lowest/best to highest)
+all_models_sorted <- scores[order(scores$year, scores$CRPS), 
+                            c("year", "trend", "covariance", "CRPS", "LogS", "RMSE", "coverage")]
+rownames(all_models_sorted) <- NULL
+
+# Table 2: the 5 best models of each year, one table per year
+for (yr in years) {
+  top5 <- head(all_models_sorted[all_models_sorted$year == yr, -1], 5)   # drop the year column
+  cat(knitr::kable(top5, digits = 2, row.names = FALSE,
+                   caption = paste0("Five best models in ", yr, " (sorted by CRPS)")),
+      sep = "\n")
+  cat("\n\n")
+}
+```
+
+```{r}
+#| label: crps-by-year
+#| fig-width: 11
+#| fig-height: 5
+# One panel per year, each with its own CRPS scale; no link between the years
+ggplot(scores, aes(covariance, CRPS, colour = trend, shape = trend)) +
+  geom_point(size = 2.5) + facet_wrap(~ year, nrow = 1, scales = "free_y") +
+  labs(x = NULL, colour = NULL, shape = NULL) + theme_minimal() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+*CRPS of every model, one panel per year (each panel has its own scale; smaller is better).*
+
+Based on the results, the selection of the optimal model dynamically changes depending on the year. For 1973, the model combining spatial coordinates and topography (\`linear_altitude\`) with a Spherical covariance provides the best nominal performance, yielding a CRPS of 149.26 and a LogS of 7.02. However, it is important to note that for 1973, the CRPS differences among the leading covariance models (Spherical, Exponential, and Matern 1.5) under the \`linear_altitude\` trend are extremely small (within a fraction of a millimeter). Consequently, the selected Spherical specification should be interpreted merely as one of several models possessing essentially identical predictive performance, rather than a uniquely superior structure.
+
+An analysis of the detailed table and the CRPS plots clearly highlights the major deterministic role of topography on rainfall. Models incorporating the elevation variable (`altitude` and `linear_altitude`) consistently show significantly lower error scores compared to those relying on a constant or purely geometric (`linear`) trend.
+
+Relying on proper scoring rules (CRPS and LogS) calculated via leave-one-out cross-validation ensures that these models not only minimize absolute error but also accurately model uncertainty. In each panel of the graph, the trends using altitude have the lowest CRPS. The best model of each year reaches a CRPS of 149.26 in 1973, 127.39 in 1974 and 170.72 in 1980.
+
+## 1.6 Gaussian assumption
+
+```{r}
+#| label: gaussian-diagnostic
+#| fig-width: 11
+#| fig-height: 8
+
+fit_of <- function(yr) {
+  best <- best_models[best_models$year == yr, ]
+  fits[[paste(yr, best$trend, best$covariance)]]
+}
+
+trend_of <- function(yr) {
+  best <- best_models[best_models$year == yr, ]
+  trends[[best$trend]]
+}
+
+diagnostic_results <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  f <- fit_of(yr)
+  X <- model.matrix(tr, y$data)
+  
+  n <- length(y$z)
+  # Retrieve the nugget-to-sill ratio nu = tau2 / sigma2 from f
+  nu_val <- f$tau2 / f$sigma2
+  
+  # Estimate beta coefficients via GLS for the original model
+  g_res <- gls_ml(f$phi, nu_val, y$z, X, y$D, f$model, f$kappa)
+  res_raw <- y$z - X %*% g_res$beta
+  
+  # Shapiro-Wilk test on raw residuals of the original model
+  sw_orig <- shapiro.test(res_raw)
+  
+  # Logarithmic transformation (log(totanno))
+  z_log <- log(y$z)
+  lm_log <- lm(z_log ~ X - 1)
+  sw_log <- shapiro.test(residuals(lm_log))
+  
+  data.frame(
+    Year = yr,
+    `Shapiro p-value (Original)` = sw_orig$p.value,
+    `Shapiro p-value (Log)` = sw_log$p.value,
+    check.names = FALSE
+  )
+}))
+
+knitr::kable(diagnostic_results, digits = 4, 
+             caption = "P-values of Shapiro-Wilk normality tests on residuals (Original vs Log-transformed scale)")
+
+# QQ-plots of residuals by year (original scale)
+par(mfrow = c(1, 3))
+for (yr in years) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  f <- fit_of(yr)
+  X <- model.matrix(tr, y$data)
+  nu_val <- f$tau2 / f$sigma2
+  g_res <- gls_ml(f$phi, nu_val, y$z, X, y$D, f$model, f$kappa)
+  res <- y$z - X %*% g_res$beta
+  qqnorm(res, main = paste("QQ-plot Residuals -", yr))
+  qqline(res, col = "red")
+}
+par(mfrow = c(1, 1))
+
+# QQ-plots of residuals by year (log-transformed scale)
+par(mfrow = c(1, 3))
+for (yr in years) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr)
+  X <- model.matrix(tr, y$data)
+  
+  # Logarithmic transformation and linear model fit
+  z_log <- log(y$z)
+  lm_log <- lm(z_log ~ X - 1)
+  res_log <- residuals(lm_log)
+  
+  qqnorm(res_log, main = paste("QQ-plot Log-Residuals -", yr))
+  qqline(res_log, col = "red")
+}
+par(mfrow = c(1, 1))
+```
+
+**Diagnostic of the Gaussian assumption:** An analysis of the residuals on the original rainfall scale reveals significant departures from normality. The Shapiro-Wilk normality tests yield p-values close to zero for 1974 and 1980 ($p < 0.001$), and the corresponding QQ-plots exhibit pronounced right-skewness in the upper tails, driven by extreme high-rainfall observations. When applying a logarithmic transformation ($\log(z)$), the residual distribution normalises considerably, with Shapiro-Wilk p-values rising above the 0.05 significance level across all three years ($p = 0.27$ in 1973, $0.71$ in 1974, and $0.25$ in 1980). **This normalization is further corroborated by the log-residual QQ-plots, where data points align closely along the theoretical diagonal line across the entire quantile range, successfully mitigating the upper-tail skewness.** While fitting models on the original scale remains standard for direct spatial interpretation in millimetres (and matches the course framework), this diagnostic indicates that a log-normal approach could help capture extreme events more robustly by mitigating heavy-tail skewness.
+
+## 1.7 The final model
+
+Instead of keeping a single model for the whole dataset, we dynamically extract the best model (trend and covariance) selected independently for each year.
+
+```{r}
+#| label: final-model
+# Fonctions pour extraire dynamiquement le bon ajustement et la bonne tendance par année
+par_year <- data.frame(year   = years,
+                       n      = sapply(yrs, function(y) length(y$z)),
+                       trend  = best_models$trend,
+                       cov    = best_models$covariance,
+                       sigma2 = sapply(years, function(yr) fit_of(yr)$sigma2),
+                       phi    = sapply(years, function(yr) fit_of(yr)$phi),
+                       tau2   = sapply(years, function(yr) fit_of(yr)$tau2))
+par_year$`nugget share (%)` <- 100 * par_year$tau2 / (par_year$tau2 + par_year$sigma2)
+
+knitr::kable(par_year, digits = 1, row.names = FALSE,
+             caption = "ML estimates and selected models in each year (phi in km)")
+```
+
+```{r}
+#| label: params-by-year
+#| fig-width: 11
+#| fig-height: 3
+params <- c("sigma2", "tau2", "phi", "nugget share (%)")
+par_long <- do.call(rbind, lapply(params, function(v)
+  data.frame(year = par_year$year, parameter = v, value = par_year[[v]])))
+par_long$parameter <- factor(par_long$parameter, levels = params)
+
+# Years are categories (no time axis), one panel per parameter with its own scale
+ggplot(par_long, aes(year, value, fill = year)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  facet_wrap(~ parameter, nrow = 1, scales = "free_y") +
+  labs(x = NULL, y = NULL) + theme_minimal()
+```
+
+*Estimates of the final model in each year. The nugget share is* $\tau^2 / (\tau^2 + \sigma^2)$.
+
+The maximum likelihood estimates describe the spatial structure of each year. In 1973 and 1974, the partial sill ($\sigma^2$), i.e. the variance of the structured spatial process, lies between 101,632.6 and 107,824.9, and the nugget share ($\tau^2 / (\tau^2 + \sigma^2)$) is about 23 % to 24 %. In 1974 the spatial range ($\phi$) is 64.7 km, the distance over which rainfall is correlated. In 1980 the partial sill is 137,233.7 and the nugget share is 34.6 %: the rainfall field is more heterogeneous, and a larger part of its variability is due to micro-scale variations or noise that the density of the network cannot capture.
+
+# Part 2: kriging on the grid, year by year
+
+The 1005 points of grid are not on a regular lattice, so the predictions are drawn as points. For each year, the specific trend of the optimal model selected for that year is evaluated at the grid points using the coordinates (and the altitude, if the trend uses it) provided in grid. The kriging parameters correspond to the specific ML estimates of the best model chosen for each respective year (as detailed in the previous section).
+
+```{r}
+#| label: kriging
+maps <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]
+  tr <- trend_of(yr) # Récupère la tendance spécifique à l'année
+  k <- krige_grid(y$z, model.matrix(tr, y$data), y$co,
+                  fit_of(yr), grid, tr)
+  data.frame(year = yr, XUTM = grid$XUTM, YUTM = grid$YUTM, k)
+}))
+maps$sd    <- sqrt(maps$var_obs)              # new observation
+maps$lower <- maps$pred - 1.96 * maps$sd      # 95 % prediction interval
+maps$upper <- maps$pred + 1.96 * maps$sd
+
+knitr::kable(aggregate(cbind(pred, sd) ~ year, data = maps, FUN = mean),
+             digits = 1, col.names = c("Year", "Mean prediction (mm)", "Mean std. dev. (mm)"),
+             caption = "Average over the grid points")
+```
+
+```{r}
+#| label: maps-pred
+#| fig-width: 11
+#| fig-height: 9
+map_theme <- theme_minimal() + theme(axis.text = element_blank(), axis.title = element_blank())
+
+ggplot(maps, aes(XUTM, YUTM, colour = pred)) + geom_point(size = 3) +
+  facet_wrap(~ year) + coord_equal() +
+  scale_colour_viridis_c(name = "Rainfall\n(mm)") + map_theme
+```
+
+*Predicted annual rainfall. All the years share the same colour scale, so they can be compared directly.*
+
+```{r}
+#| label: maps-sd
+#| fig-width: 11
+#| fig-height: 9
+ggplot(maps, aes(XUTM, YUTM, colour = sd)) + geom_point(size = 3) +
+  facet_wrap(~ year) + coord_equal() +
+  scale_colour_viridis_c(name = "Std. dev.\n(mm)") + map_theme
+```
+
+*Standard deviation of the prediction of a new observation (it cannot go below* $\tau$). The data frame `maps` also contains `lower` and `upper`, the bounds of the 95 % prediction intervals, if they have to be mapped.
+
+The universal kriging maps clearly illustrate both the spatial distribution of precipitation and its significant interannual variability. Quantitatively and visually, 1973 was the wettest year, with an average prediction of 1,181.9 mm across the grid and distinct high-rainfall zones (visible in yellow/green) concentrated in the south-central region. Conversely, 1974 was the driest year overall, with the lowest average rainfall of 957.5 mm.
+
+Regarding the standard deviation maps, they confirm the theoretical behavior of kriging: uncertainty systematically increases in the periphery (northern and far south-eastern borders) where the density of measurement stations is lower. Notably, the year 1980 stands out with a significantly higher global uncertainty (a mean standard deviation of 335.1 mm, appearing much lighter on the map) compared to 1973 and 1974 (275.2 mm and 243.0 mm, respectively). This visual result perfectly aligns with the previous maximum likelihood estimations, which identified a much higher spatial variance ($\sigma^2$) and a larger nugget share for 1980, reflecting a highly erratic and less predictable precipitation field for that specific year.
+
+## Calibration of the final model
+
+If the predictive variance is correct, the standardised errors $(z_i - \hat z_i)/\sigma_i$ of the leave-one-out have a standard deviation close to 1 and 95 % of them are within $\pm 1.96$. The variance of a new observation is the one consistent with the target (an observed value, which contains the nugget); the coverage with the variance of the latent process is given for comparison. The last two columns of RMSE compare the model with the prediction by the mean of the other stations.
+
+```{r}
+#| label: calibration
+calib <- do.call(rbind, lapply(years, function(yr) {
+  y  <- yrs[[yr]]; n <- length(y$z)
+  cv <- loo(y$z, model.matrix(trend_of(yr), y$data), y$D, fit_of(yr))
+  e  <- y$z - cv$pred
+  data.frame(Year = yr, Stations = n,
+             RMSE = sqrt(mean(e^2)),
+             `RMSE mean of others` = sqrt(mean((y$z - (sum(y$z) - y$z) / (n - 1))^2)),
+             `SD std. error` = sd(e / sqrt(cv$var_obs)),
+             `Coverage 95 % (new obs.)` = 100 * mean(abs(e / sqrt(cv$var_obs)) < 1.96),
+             `Coverage 95 % (latent)`   = 100 * mean(abs(e / sqrt(cv$var_latent)) < 1.96),
+             check.names = FALSE)
+}))
+knitr::kable(calib, digits = 2, row.names = FALSE)
+```
+
+The analysis of the calibration table demonstrates the high relevance of the selected spatial models compared to a naive predictive approach. For the three years studied, the root mean square error (RMSE) of the kriging models, which ranges from 234.29 mm to 322.79 mm, is consistently and significantly lower than the RMSE obtained if rainfall were predicted by the simple mean of the other stations, which ranges from 408.25 mm to 486.15 mm. The modeling of uncertainty is also a mathematical success: the standard deviation of the standardized errors (SD std. error) is 0.99 for each year, sitting extremely close to the perfect theoretical value of 1. The empirical 95% coverage for a new observation is highly accurate compared to the expected nominal value, reaching 95.74% in 1973, 94.65% in 1974, and 92.70% in 1980. The fact that the coverage associated with the latent process is logically lower (ranging between 82.02% and 86.10%) validates the absolute necessity of including the nugget effect variance to build realistic prediction intervals in the presence of measurement noise.
+
+Overall, this work validates the methodological requirement to calibrate and select models independently for each year. Precipitation dynamics evolve too strongly from one year to the next (as proven by the explosion of spatial variance in 1980) for a single global model to be relevant. Universal kriging, supported by strict proper scoring rules (CRPS, LogS), successfully isolated altitude as the main deterministic driver of precipitation in this domain, while simultaneously mapping the uncertainty inherent in under-sampled geographical areas.
+
+However, these results must be interpreted in light of several limitations inherent in classical geostatistics. The approach relies on a strict assumption of spatial stationarity, assuming that the variance and correlation structure (the range) are constant across the entire territory, which is often an oversimplification in regions with complex topography where microclimates exist. Furthermore, the use of maximum likelihood relies on a "plug-in" method: the estimated variogram parameters are considered perfectly known during kriging, which ignores the uncertainty associated with their own estimation. Finally, the underlying Gaussian distribution assumption of the model tends to smooth out extremes and could prove inadequate for capturing or predicting heavy-tailed, exceptional precipitation events.
+
