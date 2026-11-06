@@ -61,7 +61,12 @@ As in the previous homeworks, we gave the AI the data, the method we wanted and 
 
 ## Part I : Implementing of the Bayesian Kriging
 
+To implement the Bayesian kriging, we use the `krige.bayes` function from the `geoR` package. The provided R code automates this process across the three years of interest (1973, 1974, and 1980) using a `for` loop.
+
 ```{r}
+#| label: Bayesian kriging
+#| cache: true
+
 # Load required package
 library(geoR)
 
@@ -126,7 +131,13 @@ for (yr in years) {
 
 ```
 
+## Part II : Evaluating the estimates' precision
+
+Following the model fitting, we extract the predictions to evaluate the precision of our estimates across the spatial grid. For each year, we use the posterior median (the 50% quantile) as our robust point estimate for the annual rainfall.
+
 ```{r}
+#| label: Estimates' precision
+
 # --- Year 1973 ---
 # Extracting results to evaluate uncertainty for the year 1973[cite: 1]
 krige_1973 <- bayes_results[["1973"]]$predictive
@@ -175,7 +186,12 @@ ci_upper_80 <- krige_1980$quantiles[, 3]
 incertitude_80 <- ci_upper_80 - ci_lower_80
 ```
 
+To quantify the estimation uncertainty, we compute the 95% pointwise credibility intervals by extracting the 2.5% and 97.5% quantiles from the posterior predictive distribution. The width of this interval (upper bound minus lower bound) represents the magnitude of the uncertainty at each specific grid location. Unlike the maximum likelihood approach, these credibility intervals directly incorporate the uncertainty regarding the true values of the spatial covariance parameters.
+
 ```{r}
+#| label: Estimates' precision, results
+
+
 # Load required packages for plotting
 library(ggplot2)
 library(gridExtra)
@@ -226,7 +242,16 @@ for (yr in years) {
 }
 ```
 
+The analysis of the maps generated for the years 1973, 1974, and 1980 reveals several key spatial dynamics regarding both the predictions and the quantification of uncertainty. First of all, the spatial patterns of precipitation are similarly structured across the three years, reflecting the major influence of the altitude covariate included in the trend component. The central areas and the western fringe of the domain consistently record the highest rainfall accumulations (yellow/gold shades), while the northern and southern borders show lower values (dark purple shades). Although the absolute intensity of precipitation varies depending on the year, the geographic structure clearly dictates the overall spatial distribution. Then, the distribution of uncertainty perfectly illustrates the behavior of a geostatistical model in relation to sampling density. The large dark areas in the center and south of the domain indicate high model certainty (narrow intervals of roughly 500 to 750 mm) due to the immediate proximity of observation stations. Finally, the peripheral regions, particularly the extreme northwest of the domain, display critical uncertainty (light colors, exceeding 1250 to 1500 mm in interval width). This sharp increase illustrates the expected degradation of precision when the model is forced to extrapolate far from any measurement points.
+
+## Part III : Comparison between Homework 4 and 5
+
+Finally, we compare the results obtained during these two homeworks by using proper scores, namely CRPS and LogS.
+
 ```{r}
+#| label: Comparison, H4 vs H5
+
+
 # Install if necessary: install.packages("scoringRules")
 library(scoringRules)
 library(knitr)
@@ -298,5 +323,15 @@ scores_comparaison <- data.frame(
 # Affichage du tableau formaté pour le document final
 kable(scores_comparaison, 
       digits = 2, 
-      caption = "Comparaison des performances : Krigeage Bayésien vs Krigeage Classique (HW4)")
+      caption = "Performance Comparison: Bayesian Kriging vs. Classical Kriging (HW4)")
 ```
+
+These results demonstrate a clear and systematic superiority of the Bayesian approach over the classical kriging performed in Homework 4. The table reveals a significant improvement in probabilistic forecasting performance across all the studied years. First of all, for all three years (1973, 1974, and 1980), the Continuous Ranked Probability Score (CRPS) for the Bayesian kriging is notably lower than that of the frequentist model from Homework 4. For instance, in 1973, the score drops from 149.26 to 82.23. Since the CRPS measures the deviation between the predictive distribution and the actual observed values, a lower score indicates a much better calibration of the spatial predictions. Moreover, the same favorable trend is observed with the Logarithmic Score (LogS), which systematically decreases each year (e.g., dropping from 7.02 to 6.40 in 1973, and from 7.21 to 6.86 in 1980). The LogS heavily penalizes models that are overly confident but incorrect. Its consistent decrease proves that the posterior predictive distribution of the Bayesian model captures the true spatial uncertainty much more effectively. So, the Maximum Likelihood model in Homework 4 inherently underestimated the overall uncertainty because it assumed the variogram parameters (range, partial sill, nugget) were perfectly known once estimated. By treating these parameters as random variables with their own posterior distributions, Bayesian kriging generates more realistic and conservative credibility intervals. It is precisely this honest accounting of parametric uncertainty that is rewarded by better (lower) proper scores.
+
+## Conclusion :
+
+This assignment successfully implemented a Bayesian kriging framework to model the spatial distribution of annual rainfall for the years 1973, 1974, and 1980. By building upon the optimal trend and covariance structures identified in Homework 4, we transitioned from a frequentist Maximum Likelihood estimation to a fully Bayesian approach.
+
+The primary advantage of this methodology is its comprehensive treatment of uncertainty. Rather than assuming the variogram parameters are perfectly known, the Bayesian model treats them as random variables. As visualized in the uncertainty maps, this leads to 95% credibility intervals that realistically capture both spatial interpolation errors and parametric uncertainty, particularly in regions requiring extrapolation.
+
+The formal comparison using proper scores definitively validates this approach. The substantial reductions in both CRPS and LogS across all three years confirm that the Bayesian predictions are significantly better calibrated than those from the classical kriging model. Ultimately, this demonstrates that acknowledging and integrating parameter uncertainty yields a more robust, honest, and reliable tool for spatial predictive modeling.
