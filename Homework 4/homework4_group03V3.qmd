@@ -2,7 +2,7 @@
 title: "Homework 4"
 format:
   html:
-    code-fold: false
+    code-fold: true
     toc: true
     embed-resources: true
 engine: knitr
@@ -33,7 +33,7 @@ years <- c("1973", "1974", "1980")
 yrs <- yrs[years]
 ```
 
-We work with the annual rainfall (`totanno`, in mm) of `r length(unique(dati$ID))` stations over `r length(years)` years (`r nrow(dati)` measurements). For each year $t$ we use the model of the course:
+This study focuses on annual rainfall data (`totanno`, in mm), especially on the measurements during years 1973, 1974 and 1980. For each year $t$ the model used is the one studied in class:
 
 $$Z_t(s) = X(s)\beta_t + W_t(s) + \varepsilon_t(s)$$
 
@@ -42,7 +42,7 @@ where $X(s)\beta_t$ is a trend (constant, coordinates and/or altitude), $W_t(s)$
 The steps are:
 
 1.  fit by ML every combination of trend and covariance model, in every year, and check the convergence of each fit;
-2.  compare the combinations by leave-one-out cross-validation, with the CRPS averaged over all the years;
+2.  compare the combinations by leave-one-out cross-validation, model are selected separately for each year using CRPS as a selection criterion;
 3.  keep **the best model independently for each year** and use it, after a log transformation of the rainfall (Section 1.6), to krige on `grid`.
 
 The number of stations per year is:
@@ -84,6 +84,16 @@ covs <- data.frame(label = c("Exponential", "Spherical", "Gaussian", "Matern 1.5
 # Starting values of the optimiser: range = 0.1, 0.3 and 1 times half the largest distance,
 # combined with nu = tau2 / sigma2 = 0.1 and 1  ->  6 starting values for every fit
 start_grid <- expand.grid(phi = c(0.1, 0.3, 1), nu = c(0.1, 1))
+
+# Table of all the models: every trend combined with every covariance model
+mod <- expand.grid(j = seq_len(nrow(covs)), tr = names(trends), stringsAsFactors = FALSE)
+all_models <- data.frame(Model           = seq_len(nrow(mod)),
+                         Trend           = mod$tr,
+                         `Trend formula` = unname(sapply(trends[mod$tr], deparse)),
+                         Covariance      = covs$label[mod$j],
+                         Kappa           = covs$kappa[mod$j],
+                         check.names = FALSE)
+knitr::kable(all_models, row.names = FALSE, caption = "Candidate models")
 ```
 
 There are `r length(trends)` trends and `r nrow(covs)` covariance models, so `r length(trends) * nrow(covs)` models per year.
@@ -213,7 +223,6 @@ For every year, trend and covariance model, we (i) fit the model by ML from the 
 
 Since the observed values at the stations include micro-scale variability and measurement noise (the nugget), the predictive distributions are evaluated using the variance of a **new observation** (`var_obs = var_latent + tau2`). The empirical coverage is the percentage of observed stations falling inside their 95% **prediction interval**.
 
-This chunk is long (a few minutes): its result is cached by Quarto. Delete the `_cache` folder after any change in the functions above.
 
 ```{r}
 #| label: compare
@@ -323,7 +332,7 @@ ggplot(scores, aes(covariance, CRPS, colour = trend, shape = trend)) +
 
 Based on the results, the selection of the optimal model dynamically changes depending on the year. For 1973, the model combining spatial coordinates and topography (\`linear_altitude\`) with a Spherical covariance provides the best nominal performance, yielding a CRPS of 149.26 and a LogS of 7.02. However, it is important to note that for 1973, the CRPS differences among the leading covariance models (Spherical, Exponential, and Matern 1.5) under the \`linear_altitude\` trend are extremely small (within a fraction of a millimeter). Consequently, the selected Spherical specification should be interpreted merely as one of several models possessing essentially identical predictive performance, rather than a uniquely superior structure.
 
-An analysis of the detailed table and the CRPS plots clearly highlights the major deterministic role of topography on rainfall. Models incorporating the elevation variable (`altitude` and `linear_altitude`) consistently show significantly lower error scores compared to those relying on a constant or purely geometric (`linear`) trend. There is a 6 points of difference in the CRPS between the models considering altitude versus the models not considering it (`altitude` and `linear_altitude` have close CRPS scores for every models, same thing for `linear` and `constant`). The CRPS difference is around 1 point in 1974 but is more than 10 points in 1980.
+An analysis of the detailed table and the CRPS plots clearly highlights the major deterministic role of topography on rainfall. Models incorporating the elevation variable (`altitude` and `linear_altitude`) consistently show lower error scores compared to those relying on a constant or purely geometric (`linear`) trend. Within the candidate set, models including elevation generally have lower CRPS values than models without it; the size of this descriptive difference varies by year.”
 
 Relying on proper scoring rules (CRPS and LogS) calculated via leave-one-out cross-validation ensures that these models not only minimize absolute error but also accurately model uncertainty. In each panel of the graph, the trends using altitude have the lowest CRPS. The best model of each year reaches a CRPS of 149.26 in 1973, 127.39 in 1974 and 170.72 in 1980.
 
