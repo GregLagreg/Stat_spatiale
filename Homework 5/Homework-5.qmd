@@ -66,6 +66,7 @@ To implement the Bayesian kriging, we use the `krige.bayes` function from the `g
 ```{r}
 #| label: Bayesian kriging
 #| cache: true
+#| results: hide
 
 # Load required package
 library(geoR)
@@ -77,9 +78,9 @@ bayes_results <- list()
 pred_grid <- grid[, c("x", "y")]
 pred_covar <- data.frame(alt = grid$alt)
 
-# Define discrete grids for the priors of spatial parameters (reduced for faster computation)
+# Define discrete grids for the priors of spatial parameters
 prior_settings <- prior.control(
-  phi.discrete = seq(5, 100, length.out = 10),  
+  phi.discrete = seq(5, 300, length.out = 25),  # 25 points, borne sup à 300 km
   phi.prior = "uniform",
   tausq.rel.discrete = seq(0, 1, length.out = 5),
   tausq.rel.prior = "uniform",
@@ -97,19 +98,19 @@ for (yr in years) {
                         data.col = which(names(current_data) == "totanno"), 
                         covar.col = which(names(current_data) == "alt"))
   
-  # 2. Dynamic model and trend selection based on HW4 results[cite: 3]
+  # 2. Dynamic model and trend selection based on HW4 results
   if (yr == "1973") {
-    # 1973: Spherical covariance and linear + altitude trend[cite: 3]
+    # 1973: Spherical covariance and linear + altitude trend
     cov_mod <- "spherical"
     trend_d <- ~ geo_obj$coords[, 1] + geo_obj$coords[, 2] + geo_obj$covar$alt
     trend_l <- ~ pred_grid[, 1] + pred_grid[, 2] + pred_covar$alt
   } else if (yr == "1974") {
-    # 1974: Spherical covariance and altitude trend[cite: 3]
+    # 1974: Spherical covariance and altitude trend
     cov_mod <- "spherical"
     trend_d <- ~ alt
     trend_l <- ~ pred_covar$alt
   } else { 
-    # 1980: Exponential covariance and altitude trend[cite: 3]
+    # 1980: Exponential covariance and altitude trend
     cov_mod <- "exponential"
     trend_d <- ~ alt
     trend_l <- ~ pred_covar$alt
@@ -131,6 +132,55 @@ for (yr in years) {
 
 ```
 
+```{r}
+#| label: posterior-diagnostics
+#| fig-width: 10
+#| fig-height: 4
+
+library(knitr)
+
+# Data frame to store posterior summaries
+posterior_summaries <- data.frame()
+
+# Set up plotting area for one row and three columns (one plot per year)
+par(mfrow = c(1, 3)) 
+
+for (yr in years) {
+  post <- bayes_results[[yr]]$posterior
+  
+  # Robust extraction of posterior samples (handles different geoR versions)
+  if ("sample" %in% names(post)) {
+    phi_samples <- post$sample$phi
+    tau_samples <- post$sample$tausq.rel
+  } else {
+    phi_samples <- post$phi$sample
+    tau_samples <- post$tausq.rel$sample
+  }
+  
+  # Calculate the posterior expected value (mean) from the samples
+  phi_mean <- mean(phi_samples)
+  tau_mean <- mean(tau_samples)
+  
+  # Store the results in the summary table
+  posterior_summaries <- rbind(posterior_summaries, data.frame(
+    Year = yr,
+    Phi_Mean_km = phi_mean,
+    Tau_Rel_Mean = tau_mean
+  ))
+  
+  # Plot the posterior distribution as a histogram
+  hist(phi_samples, breaks = 15, col = "steelblue", border = "white",
+       main = paste("Posterior of Phi -", yr),
+       xlab = "Range (phi) in km", ylab = "Frequency", freq = FALSE)
+}
+# Reset plotting area
+par(mfrow = c(1, 1))
+
+# Display the summary table
+kable(posterior_summaries, digits = 2, 
+      caption = "Posterior Means for Range (phi) and Relative Nugget")
+```
+
 ## Part II : Evaluating the estimates' precision
 
 Following the model fitting, we extract the predictions to evaluate the precision of our estimates across the spatial grid. For each year, we use the posterior median (the 50% quantile) as our robust point estimate for the annual rainfall.
@@ -139,14 +189,14 @@ Following the model fitting, we extract the predictions to evaluate the precisio
 #| label: Estimates' precision
 
 # --- Year 1973 ---
-# Extracting results to evaluate uncertainty for the year 1973[cite: 1]
+# Extracting results to evaluate uncertainty for the year 1973
 krige_1973 <- bayes_results[["1973"]]$predictive
 
 # Predictions (posterior mean or median)
 pred_mean_73 <- krige_1973$mean
 pred_median_73 <- krige_1973$quantiles[, 2] # 2nd column is 0.5 (median)
 
-# 95% Credible Intervals[cite: 1]
+# 95% Credible Intervals
 ci_lower_73 <- krige_1973$quantiles[, 1] # 1st column is 0.025
 ci_upper_73 <- krige_1973$quantiles[, 3] # 3rd column is 0.975
 
@@ -155,14 +205,14 @@ incertitude_73 <- ci_upper_73 - ci_lower_73
 
 
 # --- Year 1974 ---
-# Extracting results to evaluate uncertainty for the year 1974[cite: 1]
+# Extracting results to evaluate uncertainty for the year 1974
 krige_1974 <- bayes_results[["1974"]]$predictive
 
 # Predictions (posterior mean or median)
 pred_mean_74 <- krige_1974$mean
 pred_median_74 <- krige_1974$quantiles[, 2]
 
-# 95% Credible Intervals[cite: 1]
+# 95% Credible Intervals
 ci_lower_74 <- krige_1974$quantiles[, 1]
 ci_upper_74 <- krige_1974$quantiles[, 3]
 
@@ -171,14 +221,14 @@ incertitude_74 <- ci_upper_74 - ci_lower_74
 
 
 # --- Year 1980 ---
-# Extracting results to evaluate uncertainty for the year 1980[cite: 1]
+# Extracting results to evaluate uncertainty for the year 1980
 krige_1980 <- bayes_results[["1980"]]$predictive
 
 # Predictions (posterior mean or median)
 pred_mean_80 <- krige_1980$mean
 pred_median_80 <- krige_1980$quantiles[, 2]
 
-# 95% Credible Intervals[cite: 1]
+# 95% Credible Intervals
 ci_lower_80 <- krige_1980$quantiles[, 1]
 ci_upper_80 <- krige_1980$quantiles[, 3]
 
@@ -250,79 +300,110 @@ Finally, we compare the results obtained during these two homeworks by using pro
 
 ```{r}
 #| label: Comparison, H4 vs H5
+#| cache: true
+#| results: hide
 
-
-# Install if necessary: install.packages("scoringRules")
 library(scoringRules)
 library(knitr)
+library(geoR)
 
-# Lists to store the mean scores for the Bayesian model
+# 25 support points and extended upper bound
+prior_settings_cv <- prior.control(
+  phi.discrete = seq(5, 300, length.out = 25),  
+  phi.prior = "uniform",
+  tausq.rel.discrete = seq(0, 1, length.out = 5),
+  tausq.rel.prior = "uniform",
+  sigmasq.prior = "reciprocal" 
+)
+
 crps_scores_bayes <- list()
 logs_scores_bayes <- list()
 
 for (yr in years) {
   
-  # 1. Extract observation data and coordinates
+  # 1. Data extraction
   current_data <- yrs[[yr]]$data
   obs_values <- current_data$totanno
-  obs_coords <- current_data[, c("x", "y")]
-  obs_covar <- data.frame(alt = current_data$alt)
+  n_obs <- nrow(current_data)
   
-  # Re-create geodata object
-  geo_obj <- as.geodata(current_data, 
-                        coords.col = which(names(current_data) %in% c("x", "y")), 
-                        data.col = which(names(current_data) == "totanno"), 
-                        covar.col = which(names(current_data) == "alt"))
+  # Matrix to store the 1000 posterior simulations for EACH station in Leave-One-Out
+  sim_matrix_loo <- matrix(NA, nrow = n_obs, ncol = 1000)
   
-  # 2. Dynamic model and trend selection matching HW4
-  if (yr == "1973") {
-    cov_mod <- "spherical"
-    trend_d <- ~ geo_obj$coords[, 1] + geo_obj$coords[, 2] + geo_obj$covar$alt
-    trend_l <- ~ obs_coords[, 1] + obs_coords[, 2] + obs_covar$alt
-  } else if (yr == "1974") {
-    cov_mod <- "spherical"
-    trend_d <- ~ alt
-    trend_l <- ~ obs_covar$alt
-  } else { 
-    cov_mod <- "exponential"
-    trend_d <- ~ alt
-    trend_l <- ~ obs_covar$alt
+  # --- NOTE 1: Leave-One-Out Validation (identical to Homework 4) ---
+  for (i in 1:n_obs) {
+    
+    # Separation: exclude station i for training, and keep it for testing
+    train_data <- current_data[-i, ]
+    test_data  <- current_data[i, , drop = FALSE]
+    
+    geo_train <- as.geodata(train_data, 
+                            coords.col = which(names(train_data) %in% c("x", "y")), 
+                            data.col = which(names(train_data) == "totanno"), 
+                            covar.col = which(names(train_data) == "alt"))
+    
+    # 2. Dynamic model and trend selection (identical to HW4)
+    if (yr == "1973") {
+      cov_mod <- "spherical"
+      trend_d <- ~ geo_train$coords[, 1] + geo_train$coords[, 2] + geo_train$covar$alt
+      trend_l <- ~ test_data$x + test_data$y + test_data$alt
+    } else if (yr == "1974") {
+      cov_mod <- "spherical"
+      trend_d <- ~ alt
+      trend_l <- ~ test_data$alt
+    } else { 
+      cov_mod <- "exponential"
+      trend_d <- ~ alt
+      trend_l <- ~ test_data$alt
+    }
+    
+    # 3. Bayesian fitting and prediction on the held-out station
+    kb_loo <- krige.bayes(geo_train, 
+                          locations = test_data[, c("x", "y")],
+                          model = model.control(trend.d = trend_d, 
+                                                trend.l = trend_l, 
+                                                cov.model = cov_mod),
+                          prior = prior_settings_cv,
+                          # NOTE 2: signal = FALSE to include the nugget effect on a new observation
+                          output = output.control(n.predictive = 1000, signal = FALSE))
+    
+    sim_matrix_loo[i, ] <- kb_loo$predictive$simulations
   }
   
-  # 3. Predict directly on the observation stations (in-sample)
-  kb_eval <- krige.bayes(geo_obj, 
-                         locations = obs_coords,
-                         model = model.control(trend.d = trend_d, 
-                                               trend.l = trend_l, 
-                                               cov.model = cov_mod),
-                         prior = prior_settings,
-                         output = output.control(n.predictive = 1000))
+  # 4. CRPS and LogS calculation with out-of-sample predictions
+  score_crps <- crps_sample(y = obs_values, dat = sim_matrix_loo)
+  score_logs <- logs_sample(y = obs_values, dat = sim_matrix_loo)
   
-  # 4. Calculate CRPS and LogS using the posterior predictive samples
-  # Removed t() to keep the original 188x1000 dimension
-  sim_matrix <- kb_eval$predictive$simulations
-  
-  score_crps <- crps_sample(y = obs_values, dat = sim_matrix)
-  score_logs <- logs_sample(y = obs_values, dat = sim_matrix)
-  
-  # Store the mean scores for the year (lower is better for both)
   crps_scores_bayes[[yr]] <- mean(score_crps)
   logs_scores_bayes[[yr]] <- mean(score_logs)
 }
 
-
-# Création d'un tableau regroupant les scores Bayésiens et ceux du Devoir 4
+# Creation of the final table
 scores_comparaison <- data.frame(
-  Annee = years,
-  CRPS_Bayes = unlist(crps_scores_bayes),
-  CRPS_Devoir4 = c(149.26, 127.39, 170.72), # Valeurs extraites de votre tableau HW4[cite: 3]
-  LogS_Bayes = unlist(logs_scores_bayes),
-  LogS_Devoir4 = c(7.02, 6.89, 7.21)        # Valeurs extraites de votre tableau HW4[cite: 3]
+  Year = years,
+  CRPS_Bayes = unname(unlist(crps_scores_bayes)),
+  CRPS_HW4 = c(149.26, 127.39, 170.72),
+  LogS_Bayes = unname(unlist(logs_scores_bayes)),
+  LogS_HW4 = c(7.02, 6.89, 7.21)
 )
 
-# Affichage du tableau formaté pour le document final
 kable(scores_comparaison, 
       digits = 2, 
+      row.names = FALSE,
+      caption = "Performance Comparison: Bayesian Kriging vs. Classical Kriging (HW4)")
+
+# Create a data frame comparing Bayesian scores and HW4 scores
+scores_comparaison <- data.frame(
+  Year = years,
+  CRPS_Bayes = unname(unlist(crps_scores_bayes)),
+  CRPS_HW4 = c(149.26, 127.39, 170.72), 
+  LogS_Bayes = unname(unlist(logs_scores_bayes)),
+  LogS_HW4 = c(7.02, 6.89, 7.21)        
+)
+
+# Display the formatted table for the final report
+kable(scores_comparaison, 
+      digits = 2, 
+      row.names = FALSE,
       caption = "Performance Comparison: Bayesian Kriging vs. Classical Kriging (HW4)")
 ```
 
