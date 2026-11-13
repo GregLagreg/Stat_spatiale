@@ -1,0 +1,576 @@
+---
+title: "Homework 5"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+    html-math-method: katex
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(geoR); library(spBayes); library(coda); library(ggplot2)
+
+# The data file is searched with relative paths only
+cand_files <- c("../data/RainData.RData", "data/RainData.RData", "RainData.RData")
+data_file  <- cand_files[file.exists(cand_files)][1]
+if (is.na(data_file)) stop("RainData.RData not found: put it in ../data/, data/ or next to this file")
+load(data_file)
+
+# Same preparation as in Homework 4: coordinates in km centred on the stations, altitude in km
+x0 <- mean(dati$XUTM); y0 <- mean(dati$YUTM)
+prep <- function(d) transform(d, x = (XUTM - x0) / 1000, y = (YUTM - y0) / 1000, alt = Quota / 1000)
+dati <- prep(dati[!is.na(dati$totanno), ])
+grid <- prep(grid)
+borders <- rbind(data.frame(region = "Basilicata", x = (Bas$XUTM - x0) / 1000, y = (Bas$YUTM - y0) / 1000),
+                 data.frame(region = "Calabria",   x = (Cal$XUTM - x0) / 1000, y = (Cal$YUTM - y0) / 1000))
+
+years <- c("1973", "1974", "1980")
+yrs <- lapply(setNames(years, years), function(yr) {
+  d <- dati[dati$anno == as.numeric(yr), ]
+  list(data = d, z = d$totanno, co = as.matrix(d[, c("x", "y")]), D = as.matrix(dist(d[, c("x", "y")])))
+})
+
+# Final models of Homework 4 (selected by leave-one-out CRPS, then fitted on the log scale)
+hw4 <- list("1973" = list(trend = ~ x + y + alt, cov = "spherical",   label = "x + y + altitude, spherical"),
+            "1974" = list(trend = ~ alt,         cov = "spherical",   label = "altitude, spherical"),
+            "1980" = list(trend = ~ alt,         cov = "exponential", label = "altitude, exponential"))
+set.seed(2026)
+```
+
+We work with the annual rainfall (`totanno`, in mm) of 1973, 1974 and 1980, as in Homework 4. For each year, Homework 4 selected a trend and a covariance model by leave-one-out CRPS and fitted them on the **log of the rainfall**:
+
+$$\log Z(s) = X(s)\beta + W(s) + \varepsilon(s),$$
+
+where $X(s)\beta$ is the trend, $W(s)$ a Gaussian process with partial sill $\sigma^2$ and range $\phi$, and $\varepsilon(s)$ the nugget, with variance $\tau^2$. The parameters were estimated by maximum likelihood (ML) and then used **as if they were known** (plug-in).
+
+In this homework we keep the same models, but we treat $\beta$, $\sigma^2$, $\phi$ and $\tau^2$ as **random**, with prior distributions. The prediction is then an average of the kriging predictions over all the plausible values of the parameters, so the credibility intervals also include the uncertainty on the parameters. The steps are:
+
+1. fit the Bayesian model with `krige.bayes` (geoR), and check the posterior with an MCMC algorithm (`spLM`, spBayes) and its convergence diagnostics;
+2. predict on the grid and build pointwise 95 % credibility intervals;
+3. compare with the ML kriging of Homework 4 with proper scores (CRPS and logarithmic score), computed out of sample.
+
+# AI prompt
+
+As in the previous homeworks, we gave the AI the data, the models, the method we wanted and the checks to do.
+
+> I'm a student in spatial statistics. In R I have RainData.RData (annual rainfall `totanno` at about 180 stations per year, with UTM coordinates and altitude, and a prediction grid with altitude). In Homework 4 I chose, for 1973, 1974 and 1980, a trend and a covariance model by leave-one-out CRPS, and I fitted them by ML on log(rainfall): 1973 x + y + altitude with spherical covariance, 1974 altitude with spherical, 1980 altitude with exponential. Now I need to do Bayesian kriging with the same models. For each year: 1) fit the model with krige.bayes using vague priors (flat on beta, reciprocal on sigma2, discrete uniform priors on the range and on the relative nugget), show the posterior of the parameters next to the ML estimates, and check the posterior with an MCMC method (spLM from spBayes, 3 chains, traceplots, R-hat and effective sample size); also check if the results depend on the prior of the range; 2) predict on the grid and build pointwise 95 % credibility intervals for a new observation (with the nugget), back-transformed to mm, and map the lower bound, the median and the upper bound; 3) compare with the ML kriging of Homework 4 using CRPS and log score computed out of sample (leave-one-out as in Homework 4, and a 10-fold cross-validation where the parameters are re-estimated), and the coverage and width of the intervals. Give R code in chunks for a Quarto document and explain the results simply, without over-interpreting.
+
+**Answer.** Here is the analysis asked for by this prompt.
+
+# Part I: Bayesian kriging
+
+## 1.1 Functions
+
+The first functions are those of Homework 4 (ML fit and universal kriging). The others compute the Bayesian predictive distribution from the posterior and the proper scores.
+
+```{r}
+#| label: functions
+#| code-fold: true
+# ---------- Homework 4: correlation, ML fit and universal kriging ----------
+corr_fun <- function(h, model, phi, kappa = 0.5) {
+  u <- h / phi
+  switch(model,
+    exponential = exp(-u),
+    spherical   = ifelse(u < 1, 1 - 1.5 * u + 0.5 * u^3, 0),
+    matern      = { r <- u^kappa * besselK(u, kappa) / (2^(kappa - 1) * gamma(kappa)); r[u == 0] <- 1; r })
+}
+cross_dist <- function(a, b) sqrt(outer(a[, 1], b[, 1], "-")^2 + outer(a[, 2], b[, 2], "-")^2)
+
+gls_ml <- function(phi, nu, z, X, D, model, kappa = 0.5) {
+  n  <- length(z)
+  R  <- chol(corr_fun(D, model, phi, kappa) + diag(nu, n))
+  Xs <- backsolve(R, X, transpose = TRUE); zs <- backsolve(R, z, transpose = TRUE)
+  beta <- solve(crossprod(Xs), crossprod(Xs, zs))
+  s2   <- sum((zs - Xs %*% beta)^2) / n
+  list(logLik = -0.5 * (n * log(2 * pi) + 2 * sum(log(diag(R))) + n * log(s2) + n),
+       beta = c(beta), sigma2 = s2)
+}
+start_grid <- expand.grid(phi = c(0.1, 0.3, 1), nu = c(0.1, 1))
+fit_ml <- function(z, X, D, model, kappa = 0.5) {
+  maxd <- max(D); lower <- log(c(0.005 * maxd, 1e-4)); upper <- log(c(5 * maxd, 100))
+  nll <- function(p) { v <- tryCatch(-gls_ml(exp(p[1]), exp(p[2]), z, X, D, model, kappa)$logLik,
+                                     error = function(e) 1e10); if (is.finite(v)) v else 1e10 }
+  runs <- do.call(rbind, lapply(seq_len(nrow(start_grid)), function(k) {
+    o <- optim(log(c(start_grid$phi[k] * maxd / 2, start_grid$nu[k])), nll, method = "L-BFGS-B",
+               lower = lower, upper = upper)
+    data.frame(converged = o$convergence == 0, logLik = -o$value, phi = exp(o$par[1]), nu = exp(o$par[2]))
+  }))
+  ok <- if (any(runs$converged)) runs$converged else rep(TRUE, nrow(runs))
+  b  <- runs[ok, ][which.max(runs$logLik[ok]), ]
+  g  <- gls_ml(b$phi, b$nu, z, X, D, model, kappa)
+  list(model = model, kappa = kappa, phi = b$phi, sigma2 = g$sigma2, tau2 = b$nu * g$sigma2,
+       beta = g$beta, logLik = g$logLik)
+}
+# universal kriging with known covariance parameters: predictor and variance of a new observation
+krige_uk <- function(z, X, co, X0, co0, p) {
+  S <- p$sigma2 * corr_fun(as.matrix(dist(co)), p$model, p$phi, p$kappa) + diag(p$tau2, length(z))
+  C <- p$sigma2 * corr_fun(cross_dist(co, co0), p$model, p$phi, p$kappa)
+  Si <- solve(S); A <- solve(t(X) %*% Si %*% X); b <- A %*% t(X) %*% Si %*% z
+  SiC <- Si %*% C; R <- X0 - t(SiC) %*% X
+  v_lat <- pmax(p$sigma2 - colSums(C * SiC) + rowSums((R %*% A) * R), 0)
+  data.frame(pred = c(X0 %*% b + t(SiC) %*% (z - X %*% b)), var_latent = v_lat, var_obs = v_lat + p$tau2)
+}
+# leave-one-out with the parameters fixed at their full-sample estimates (protocol of Homework 4)
+loo_ml <- function(z, X, co, p)
+  do.call(rbind, lapply(seq_along(z), function(i)
+    krige_uk(z[-i], X[-i, , drop = FALSE], co[-i, ], X[i, , drop = FALSE], co[i, , drop = FALSE], p)))
+
+# ---------- Bayesian model ----------
+phi_grid <- seq(5, 250, by = 5)          # support of the discrete prior of the range (km)
+nu_grid  <- seq(0, 1, by = 0.05)         # support of the discrete prior of tau2 / sigma2
+
+# posterior of (beta, sigma2, phi, tau2/sigma2) with krige.bayes, on the log scale
+kb_post <- function(d, z, trend, cov, phi_prior = "uniform", n_post = 2000) {
+  gd <- as.geodata(cbind(d$x, d$y, z), coords.col = 1:2, data.col = 3)
+  Xd <- model.matrix(trend, d)
+  kb <- krige.bayes(gd, model = model.control(trend.d = ~ Xd - 1, cov.model = cov),
+          prior = prior.control(beta.prior = "flat", sigmasq.prior = "reciprocal",
+                                phi.prior = phi_prior, phi.discrete = phi_grid,
+                                tausq.rel.prior = "uniform", tausq.rel.discrete = nu_grid),
+          output = output.control(n.posterior = n_post, messages = FALSE))
+  kb$posterior$sample
+}
+
+# Posterior predictive distribution at new points co0 (a NEW OBSERVATION, with the nugget).
+# For each posterior draw k, log Z(s0) given the data is normal (simple kriging with beta_k,
+# sigma2_k, phi_k, nu_k): mean M[, k] and variance V[, k]. The predictive distribution is the
+# mixture of these normals over the draws. Draws sharing (phi, nu) share the same matrices.
+pred_mix <- function(post, z, X, co, X0, co0, cov) {
+  p <- ncol(X); B <- as.matrix(post[, seq_len(p)])
+  key <- paste(post$phi, post$tausq.rel)
+  M <- V <- matrix(NA_real_, nrow(co0), nrow(post))
+  for (k in unique(key)) {
+    i  <- which(key == k); ph <- post$phi[i[1]]; nu <- post$tausq.rel[i[1]]
+    R  <- chol(corr_fun(as.matrix(dist(co)), cov, ph) + diag(nu, length(z)))
+    C  <- corr_fun(cross_dist(co, co0), cov, ph)                       # n x m correlations
+    A  <- t(backsolve(R, backsolve(R, C, transpose = TRUE)))            # m x n : C' V^-1
+    v1 <- 1 + nu - rowSums(A * t(C))                                    # new observation (sigma2 = 1)
+    Bk <- t(B[i, , drop = FALSE])
+    M[, i] <- X0 %*% Bk + A %*% (z - X %*% Bk)
+    V[, i] <- outer(v1, post$sigmasq[i])
+  }
+  list(M = M, V = V)
+}
+# Same, leave-one-out at the stations, with the posterior of the full sample (protocol of HW4):
+# with Q = V^-1, E(z_i | z_-i) = mu_i - (Q (z - mu))_i / Q_ii and Var = sigma2 / Q_ii
+loo_mix <- function(post, z, X, D, cov) {
+  p <- ncol(X); B <- as.matrix(post[, seq_len(p)]); key <- paste(post$phi, post$tausq.rel)
+  M <- V <- matrix(NA_real_, length(z), nrow(post))
+  for (k in unique(key)) {
+    i <- which(key == k)
+    Q <- chol2inv(chol(corr_fun(D, cov, post$phi[i[1]]) + diag(post$tausq.rel[i[1]], length(z))))
+    q <- diag(Q); Rz <- z - X %*% t(B[i, , drop = FALSE])
+    M[, i] <- z - (Q %*% Rz) / q
+    V[, i] <- outer(1 / q, post$sigmasq[i])
+  }
+  list(M = M, V = V)
+}
+
+# ---------- proper scores in mm (smaller is better) ----------
+crps_lnorm <- function(y, m, s) { w <- (log(y) - m) / s
+  y * (2 * pnorm(w) - 1) - 2 * exp(m + s^2 / 2) * (pnorm(w - s) + pnorm(s / sqrt(2)) - 1) }
+# Exact quantiles of a mixture of normals (one mixture per row of M, V), by bisection on its CDF
+mix_quantile <- function(M, V, p) {
+  S <- sqrt(V); lo <- apply(M - 6 * S, 1, min); hi <- apply(M + 6 * S, 1, max)
+  for (it in 1:40) { mid <- (lo + hi) / 2; up <- rowMeans(pnorm((mid - M) / S)) < p
+                     lo[up] <- mid[up]; hi[!up] <- mid[!up] }
+  (lo + hi) / 2
+}
+# CRPS in mm of a mixture of log-normals: integral of (F(x) - 1{x >= y})^2 dx, computed
+# numerically on the log scale (x = e^t), split at log(y) where the indicator jumps
+crps_mix <- function(y, M, V, nt = 150) {
+  S <- sqrt(V)
+  sapply(seq_along(y), function(i) {
+    ly <- log(y[i]); a <- min(M[i, ] - 7 * S[i, ], ly); b <- max(M[i, ] + 7 * S[i, ], ly)
+    part <- function(t, ind) { F <- colMeans(pnorm(outer(-M[i, ], t, "+") / S[i, ]))
+      g <- (F - ind)^2 * exp(t); sum(diff(t) * (head(g, -1) + tail(g, -1)) / 2) }
+    part(seq(a, ly, length.out = nt), 0) + part(seq(ly, b, length.out = nt), 1)
+  })
+}
+# ML (plug-in): log-normal predictive distribution with mean m and sd s on the log scale
+score_ml <- function(y, m, s) data.frame(
+  CRPS = crps_lnorm(y, m, s), LogS = -dlnorm(y, m, s, log = TRUE),
+  covered = abs(log(y) - m) < 1.96 * s, width = exp(m + 1.96 * s) - exp(m - 1.96 * s))
+# Bayes: mixture of log-normals; LogS, CRPS and 95 % interval computed exactly (no simulation)
+score_mix <- function(y, mix) {
+  dens <- rowMeans(dlnorm(matrix(y, nrow(mix$M), ncol(mix$M)), mix$M, sqrt(mix$V)))
+  lo <- exp(mix_quantile(mix$M, mix$V, 0.025)); hi <- exp(mix_quantile(mix$M, mix$V, 0.975))
+  data.frame(CRPS = crps_mix(y, mix$M, mix$V), LogS = -log(dens),
+             covered = y >= lo & y <= hi, width = hi - lo)
+}
+```
+
+## 1.2 The Homework 4 models (ML)
+
+We first refit the final models of Homework 4 by ML on the log scale, as a reference.
+
+```{r}
+#| label: ml-fits
+ml <- lapply(years, function(yr) {
+  y <- yrs[[yr]]; X <- model.matrix(hw4[[yr]]$trend, y$data)
+  fit_ml(log(y$z), X, y$D, hw4[[yr]]$cov)
+}); names(ml) <- years
+knitr::kable(data.frame(Year = years, Model = sapply(hw4, `[[`, "label"),
+                        sigma2 = sapply(ml, `[[`, "sigma2"), `phi (km)` = sapply(ml, `[[`, "phi"),
+                        tau2 = sapply(ml, `[[`, "tau2"),
+                        `Nugget share (%)` = sapply(ml, function(f) 100 * f$tau2 / (f$tau2 + f$sigma2)),
+                        check.names = FALSE), digits = c(0, 0, 3, 1, 3, 1), row.names = FALSE,
+             caption = "ML estimates of Homework 4 (log scale)")
+```
+
+## 1.3 Priors and posterior with `krige.bayes`
+
+`krige.bayes` uses the approach of the course: the range $\phi$ and the relative nugget $\tau^2_R = \tau^2/\sigma^2$ are given **discrete** priors, and for each value of $(\phi, \tau^2_R)$ the posterior of $\beta$ and $\sigma^2$ is known in closed form (conjugate model). The priors are vague:
+
+| Parameter | Prior | Meaning |
+|---|---|---|
+| $\beta$ (trend) | flat, $p(\beta) \propto 1$ | no preference for any value |
+| $\sigma^2$ (partial sill) | reciprocal, $p(\sigma^2) \propto 1/\sigma^2$ | no preference for any scale |
+| $\phi$ (range) | uniform on 5, 10, …, 250 km | all ranges up to 250 km equally likely |
+| $\tau^2_R = \tau^2/\sigma^2$ | uniform on 0, 0.05, …, 1 | nugget from 0 to the size of the partial sill |
+
+The upper limit of 250 km is about three quarters of the largest distance between two stations (`r round(max(yrs[["1980"]]$D))` km): a larger range would describe a variation over the whole region, which the data cannot distinguish from the trend.
+
+```{r}
+#| label: posterior
+post <- lapply(years, function(yr) {
+  y <- yrs[[yr]]; kb_post(y$data, log(y$z), hw4[[yr]]$trend, hw4[[yr]]$cov)
+}); names(post) <- years
+
+ci <- function(v) sprintf("%.3g [%.3g, %.3g]", median(v), quantile(v, 0.025), quantile(v, 0.975))
+post_tab <- do.call(rbind, lapply(years, function(yr) {
+  s <- post[[yr]]; f <- ml[[yr]]
+  data.frame(Year = yr, Parameter = c("sigma2", "phi (km)", "tau2", "nugget share (%)"),
+             ML = sapply(c(f$sigma2, f$phi, f$tau2, 100 * f$tau2 / (f$tau2 + f$sigma2)),
+                         function(v) format(signif(v, 3))),
+             `Posterior median [95 % credibility interval]` =
+               c(ci(s$sigmasq), ci(s$phi), ci(s$tausq.rel * s$sigmasq),
+                 ci(100 * s$tausq.rel / (1 + s$tausq.rel))), check.names = FALSE)
+}))
+knitr::kable(post_tab, row.names = FALSE)
+```
+
+*ML estimates of Homework 4 and posterior medians with 95 % credibility intervals (log scale; $\phi$ in km).*
+
+```{r}
+#| label: posterior-phi
+#| fig-width: 10
+#| fig-height: 3.4
+pp <- do.call(rbind, lapply(years, function(yr) data.frame(Year = yr, phi = post[[yr]]$phi)))
+mlp <- data.frame(Year = years, phi = sapply(ml, `[[`, "phi"))
+ggplot(pp, aes(phi)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 5, boundary = 2.5, fill = "grey70", colour = "white") +
+  geom_hline(yintercept = 1 / (max(phi_grid) - min(phi_grid) + 5), colour = "steelblue", linetype = 2) +
+  geom_vline(data = mlp, aes(xintercept = phi), colour = "firebrick") +
+  facet_wrap(~ Year) + labs(x = expression(phi ~ "(km)"), y = "Density") + theme_minimal()
+up_mass <- sapply(post, function(s) mean(s$phi >= 200))
+```
+
+*Posterior of the range $\phi$ (histogram), uniform prior (dashed blue line) and ML estimate of Homework 4 (red line).*
+
+The posterior of the range is much more spread than a single ML value: its 95 % credibility interval goes from `r paste(sapply(post, function(s) paste0(quantile(s$phi, 0.025), " to ", quantile(s$phi, 0.975), " km")), collapse = ", ")` (`r paste(years, collapse = ", ")`), and its median is larger than the ML estimate. The share of the posterior above 200 km is `r paste(paste0(round(100 * up_mass), " % in ", years), collapse = ", ")`. When this share is large, the posterior keeps weight up to the limit of the prior: the data contain limited information on the range (as already seen in Homework 3), so its posterior depends on the prior. The posterior medians of $\sigma^2$ and $\phi$ are both larger than the ML estimates: a larger range goes with a larger partial sill. Section 1.5 checks whether this matters for the predictions.
+
+## 1.4 MCMC check with `spLM`
+
+`krige.bayes` computes the posterior on a grid of values. As an independent check we also fit the same models with an MCMC algorithm, `spLM` (spBayes), which samples $\sigma^2$, $\tau^2$ and $\phi$ with a Metropolis algorithm and integrates out $\beta$ (flat prior). As in the course, we run **3 chains** from very different starting values (10 000 iterations each, the first half discarded as burn-in) and check:
+
+- the **traceplots**: after the burn-in the chains must overlap;
+- the **potential scale reduction factor** $\hat R$ (Gelman–Rubin): close to 1 when the chains agree;
+- the **effective sample size**: the number of independent draws that the correlated chains are worth.
+
+`spLM` puts a uniform prior on the decay $1/\phi$ (here between 1/250 and 1/5 km$^{-1}$), which corresponds to $p(\phi) \propto 1/\phi^2$ on the range, and inverse-gamma priors IG(2, 0.1) on $\sigma^2$ and IG(2, 0.05) on $\tau^2$ (weakly informative, centred on plausible variances of the log-rainfall). To compare like with like, we also run `krige.bayes` with the same prior on the range (`phi.prior = "squared.reciprocal"`).
+
+```{r}
+#| label: splm
+n_it <- 10000; burn <- 5000
+starts_mc <- list(list(phi = 1 / 20,  sigma.sq = 0.05, tau.sq = 0.02),
+                  list(phi = 1 / 80,  sigma.sq = 0.15, tau.sq = 0.05),
+                  list(phi = 1 / 200, sigma.sq = 0.40, tau.sq = 0.15))
+mc <- lapply(years, function(yr) {
+  d <- yrs[[yr]]$data; d$logz <- log(d$totanno)
+  chains <- lapply(seq_along(starts_mc), function(ch) {
+    set.seed(100 + ch)
+    m <- spLM(update(hw4[[yr]]$trend, logz ~ .), data = d, coords = yrs[[yr]]$co, cov.model = hw4[[yr]]$cov,
+              starting = starts_mc[[ch]], tuning = list(phi = 0.5, sigma.sq = 0.5, tau.sq = 0.5),
+              priors = list(beta.Flat = TRUE, phi.Unif = c(1 / 250, 1 / 5),
+                            sigma.sq.IG = c(2, 0.1), tau.sq.IG = c(2, 0.05)),
+              amcmc = list(n.batch = n_it / 25, batch.length = 25, accept.rate = 0.43), verbose = FALSE)
+    th <- m$p.theta.samples
+    mcmc(cbind(sigma2 = th[, "sigma.sq"], tau2 = th[, "tau.sq"], range = 1 / th[, "phi"]))
+  })
+  list(all = mcmc.list(chains), kept = mcmc.list(lapply(chains, function(x) mcmc(x[-(1:burn), ]))))
+}); names(mc) <- years
+
+post_sq <- lapply(years, function(yr) {
+  y <- yrs[[yr]]; kb_post(y$data, log(y$z), hw4[[yr]]$trend, hw4[[yr]]$cov, phi_prior = "squared.reciprocal")
+}); names(post_sq) <- years
+
+diag_tab <- do.call(rbind, lapply(years, function(yr) {
+  k <- mc[[yr]]$kept; g <- gelman.diag(k, autoburnin = FALSE)$psrf[, 1]; e <- effectiveSize(k)
+  s <- as.matrix(k); kb <- post_sq[[yr]]
+  data.frame(Year = yr, Parameter = c("sigma2", "tau2", "range (km)"),
+             `R-hat` = g, `Effective size` = round(e),
+             `spLM: median [95 % CI]` = c(ci(s[, "sigma2"]), ci(s[, "tau2"]), ci(s[, "range"])),
+             `krige.bayes, same prior on phi` = c(ci(kb$sigmasq), ci(kb$tausq.rel * kb$sigmasq), ci(kb$phi)),
+             check.names = FALSE)
+}))
+knitr::kable(diag_tab, digits = 3, row.names = FALSE)
+```
+
+*Convergence diagnostics of `spLM` (3 chains × 5 000 iterations after burn-in) and comparison of the posterior with `krige.bayes` using the same prior on the range.*
+
+```{r}
+#| label: traceplots
+#| fig-width: 10
+#| fig-height: 3.4
+tr <- do.call(rbind, lapply(years, function(yr) do.call(rbind, lapply(seq_along(mc[[yr]]$all), function(ch)
+  data.frame(Year = yr, chain = factor(ch), it = seq_len(n_it), range = c(mc[[yr]]$all[[ch]][, "range"]))))))
+ggplot(tr[tr$it %% 5 == 0, ], aes(it, range, colour = chain)) + geom_line(linewidth = 0.25, alpha = 0.8) +
+  geom_vline(xintercept = burn, linetype = 2) + facet_wrap(~ Year) + scale_y_log10() +
+  labs(x = "Iteration", y = "Range (km, log scale)", colour = "Chain") + theme_minimal()
+```
+
+*Traceplots of the range for the 3 chains (one point every 5 iterations). The dashed line is the end of the burn-in.*
+
+`r rh <- max(diag_tab[["R-hat"]]); es <- min(diag_tab[["Effective size"]]); paste0("After the burn-in, the three chains overlap in the traceplots, the largest $\\hat R$ is ", round(rh, 3), " and the smallest effective sample size is ", es, " (out of 15 000 draws). ", if (rh < 1.1) "The chains have therefore converged to the same distribution." else "Some $\\hat R$ are above 1.1, so the chains have not fully converged for these parameters and the results must be read with care.", " The effective sample size is much smaller than the number of draws because successive draws are correlated, especially for the range, which is weakly determined by the data.")` The posterior medians and intervals of `spLM` are close to those of `krige.bayes` with the same prior on the range; the small differences come from the different priors on the variances (inverse-gamma in `spLM`, reciprocal and uniform in `krige.bayes`).
+
+## 1.5 Sensitivity to the prior of the range
+
+The course proposes several priors for $\phi$: uniform, or decreasing like $1/\phi$ or $1/\phi^2$ (larger ranges less likely). Since the range is weakly identified, we check how much the posterior and the predictions change with this choice. The predictive quality is measured by the leave-one-out CRPS (Part III explains the score).
+
+```{r}
+#| label: prior-sensitivity
+priors <- c(uniform = "uniform", `1/phi` = "reciprocal", `1/phi^2` = "squared.reciprocal")
+sens <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]; X <- model.matrix(hw4[[yr]]$trend, y$data)
+  do.call(rbind, lapply(names(priors), function(pr) {
+    s <- switch(pr, uniform = post[[yr]], `1/phi^2` = post_sq[[yr]],
+                kb_post(y$data, log(y$z), hw4[[yr]]$trend, hw4[[yr]]$cov, phi_prior = priors[[pr]]))
+    sc <- score_mix(y$z, loo_mix(s, log(y$z), X, y$D, hw4[[yr]]$cov))
+    data.frame(Year = yr, `Prior on phi` = pr, `phi: median [95 % CI]` = ci(s$phi),
+               `LOO CRPS (mm)` = mean(sc$CRPS), `Mean width of 95 % interval (mm)` = mean(sc$width),
+               check.names = FALSE)
+  }))
+}))
+knitr::kable(sens, digits = 1, row.names = FALSE)
+crps_range <- tapply(sens[["LOO CRPS (mm)"]], sens$Year, function(v) 100 * (max(v) / min(v) - 1))
+```
+
+*Posterior of the range and leave-one-out predictive quality under three priors for $\phi$.*
+
+The prior moves the posterior of $\phi$ (smaller ranges with $1/\phi$ and $1/\phi^2$), but the CRPS changes by at most `r round(max(crps_range), 1)` % between the three priors in each year. The predictions are therefore much less sensitive to the prior than the range itself: different values of the range, with the corresponding values of $\sigma^2$, give almost the same predictions. In the rest of the homework we keep the uniform prior, chosen before seeing the results.
+
+# Part II: credibility intervals on the grid
+
+## 2.1 Predictive distribution
+
+For a grid point $s_0$, the Bayesian predictive distribution of $\log Z(s_0)$ is the average, over the 2 000 posterior draws of $(\beta, \sigma^2, \phi, \tau^2_R)$, of the normal kriging distributions obtained with each draw. We predict a **new observation**, i.e. we include the nugget, as in Homework 4. (By default `krige.bayes` predicts the latent process without the nugget, `signal = TRUE`; the intervals for a new observation are wider.) The pointwise 95 % credibility interval is given by the 2.5 % and 97.5 % quantiles of this distribution, computed exactly (by bisection on its distribution function) on the log scale and transformed to mm; since the exponential is increasing, it is exactly a 95 % interval for the rainfall. The point prediction is the median.
+
+We first check our computation against the predictive moments returned by `krige.bayes` (`signal = FALSE`) at 20 grid points:
+
+```{r}
+#| label: check-krige-bayes
+chk_idx <- round(seq(1, nrow(grid), length.out = 20)); yr <- "1980"; y <- yrs[[yr]]
+Xd <- model.matrix(hw4[[yr]]$trend, y$data); Xg <- model.matrix(hw4[[yr]]$trend, grid[chk_idx, ])
+kb_chk <- krige.bayes(as.geodata(cbind(y$co, log(y$z)), coords.col = 1:2, data.col = 3),
+  locations = as.matrix(grid[chk_idx, c("x", "y")]),
+  model = model.control(trend.d = ~ Xd - 1, trend.l = ~ Xg - 1, cov.model = hw4[[yr]]$cov),
+  prior = prior.control(beta.prior = "flat", sigmasq.prior = "reciprocal", phi.prior = "uniform",
+                        phi.discrete = phi_grid, tausq.rel.prior = "uniform", tausq.rel.discrete = nu_grid),
+  output = output.control(n.posterior = 2000, n.predictive = 0, signal = FALSE, messages = FALSE))
+mx <- pred_mix(post[[yr]], log(y$z), Xd, y$co, Xg, as.matrix(grid[chk_idx, c("x", "y")]), hw4[[yr]]$cov)
+m_ours <- rowMeans(mx$M); v_ours <- rowMeans(mx$V) + apply(mx$M, 1, var)
+knitr::kable(data.frame(
+  `Largest difference of predictive mean` = max(abs(m_ours - kb_chk$predictive$mean)),
+  `Largest relative difference of predictive sd (%)` =
+    100 * max(abs(sqrt(v_ours) / sqrt(kb_chk$predictive$variance) - 1)), check.names = FALSE),
+  digits = 3, caption = "Our predictive distribution vs krige.bayes (1980, log scale)")
+```
+
+The differences are of the order of the Monte Carlo error of the 2 000 posterior draws, so our predictive distribution is the one of `krige.bayes`.
+
+```{r}
+#| label: grid-prediction
+gco <- as.matrix(grid[, c("x", "y")])
+res_grid <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]; X <- model.matrix(hw4[[yr]]$trend, y$data); X0 <- model.matrix(hw4[[yr]]$trend, grid)
+  # Bayes
+  mx <- pred_mix(post[[yr]], log(y$z), X, y$co, X0, gco, hw4[[yr]]$cov)
+  q <- exp(sapply(c(0.025, 0.5, 0.975), function(pr) mix_quantile(mx$M, mx$V, pr)))
+  # ML of Homework 4 (plug-in)
+  k <- krige_uk(log(y$z), X, y$co, X0, gco, ml[[yr]]); s <- sqrt(k$var_obs)
+  data.frame(Year = yr, x = grid$x, y = grid$y,
+             lower = q[, 1], median = q[, 2], upper = q[, 3], width = q[, 3] - q[, 1],
+             ml_median = exp(k$pred), ml_width = exp(k$pred + 1.96 * s) - exp(k$pred - 1.96 * s))
+}))
+```
+
+## 2.2 Maps
+
+```{r}
+#| label: maps-ci
+#| fig-width: 10
+#| fig-height: 11
+mp <- rbind(data.frame(res_grid[, c("Year", "x", "y")], value = res_grid$lower,  what = "Lower bound (2.5 %)"),
+            data.frame(res_grid[, c("Year", "x", "y")], value = res_grid$median, what = "Median"),
+            data.frame(res_grid[, c("Year", "x", "y")], value = res_grid$upper,  what = "Upper bound (97.5 %)"))
+mp$what <- factor(mp$what, levels = c("Lower bound (2.5 %)", "Median", "Upper bound (97.5 %)"))
+ggplot(mp, aes(x, y, colour = value)) + geom_point(shape = 15, size = 2) +
+  geom_path(data = borders, aes(x, y, group = region), inherit.aes = FALSE, colour = "grey30", linewidth = 0.25) +
+  facet_grid(Year ~ what) + coord_equal() +
+  scale_colour_viridis_c(name = "Rainfall\n(mm)", trans = "log10", direction = -1,
+                         breaks = c(250, 500, 1000, 2000, 4000)) +
+  labs(x = NULL, y = NULL) + theme_minimal() + theme(axis.text = element_blank(), panel.grid = element_blank())
+```
+
+*Bayesian kriging: median and pointwise 95 % credibility interval of the annual rainfall for a new observation. All panels share the same (logarithmic) colour scale.*
+
+```{r}
+#| label: maps-width
+#| fig-width: 10
+#| fig-height: 7.2
+wd <- rbind(data.frame(res_grid[, c("Year", "x", "y")], value = res_grid$width, what = "Width of the 95 % interval (mm)"),
+            data.frame(res_grid[, c("Year", "x", "y")], value = res_grid$width / res_grid$ml_width,
+                       what = "Width ratio, Bayes / ML"))
+p1 <- ggplot(wd[wd$what == levels(factor(wd$what))[1], ], aes(x, y, colour = value)) +
+  geom_point(shape = 15, size = 1.7) + facet_wrap(~ Year) + coord_equal() +
+  geom_path(data = borders, aes(x, y, group = region), inherit.aes = FALSE, colour = "grey30", linewidth = 0.25) +
+  scale_colour_viridis_c(name = "Width\n(mm)", option = "magma", direction = -1) +
+  labs(x = NULL, y = NULL) + theme_minimal() + theme(axis.text = element_blank(), panel.grid = element_blank())
+p2 <- ggplot(wd[wd$what == "Width ratio, Bayes / ML", ], aes(x, y, colour = value)) +
+  geom_point(shape = 15, size = 1.7) + facet_wrap(~ Year) + coord_equal() +
+  geom_path(data = borders, aes(x, y, group = region), inherit.aes = FALSE, colour = "grey30", linewidth = 0.25) +
+  scale_colour_gradient2(name = "Bayes / ML", low = "steelblue", mid = "white", high = "firebrick", midpoint = 1) +
+  labs(x = NULL, y = NULL) + theme_minimal() + theme(axis.text = element_blank(), panel.grid = element_blank())
+print(p1); print(p2)
+
+nn <- apply(cross_dist(gco, unique(as.matrix(dati[, c("x", "y")]))), 1, min)   # distance to the nearest station
+w_sum <- do.call(rbind, lapply(split(res_grid, res_grid$Year), function(r) data.frame(
+  Year = r$Year[1], `Mean width ML (mm)` = mean(r$ml_width), `Mean width Bayes (mm)` = mean(r$width),
+  `Mean ratio Bayes / ML` = mean(r$width / r$ml_width),
+  `Ratio, 10 % of points closest to a station` = mean((r$width / r$ml_width)[nn <= quantile(nn, 0.1)]),
+  `Ratio, 10 % of points farthest from a station` = mean((r$width / r$ml_width)[nn >= quantile(nn, 0.9)]),
+  `sqrt(tau2 posterior median / tau2 ML)` = sqrt(median(post[[r$Year[1]]]$tausq.rel * post[[r$Year[1]]]$sigmasq) /
+                                               ml[[r$Year[1]]]$tau2),
+  check.names = FALSE)))
+knitr::kable(w_sum, digits = 2, row.names = FALSE)
+```
+
+*Top: width of the Bayesian 95 % credibility interval. Bottom: ratio between the widths of the Bayesian interval and of the ML prediction interval of Homework 4 (red: Bayes wider).*
+
+**Comments.**
+
+- The median maps have the same pattern as the ML maps of Homework 4 (largest rainfall in the mountain areas, lowest on the coasts): the correlation between the Bayesian median and the ML median over the grid is `r paste(round(sapply(split(res_grid, res_grid$Year), function(r) cor(r$median, r$ml_median)), 3), collapse = ", ")` for `r paste(years, collapse = ", ")`.
+- The width of the intervals follows the level of the rainfall (log-normal model: the uncertainty in mm is larger where it rains more) and the distance to the stations.
+- On average the Bayesian intervals are `r paste(round(100 * (w_sum[["Mean ratio Bayes / ML"]] - 1), 1), "%", collapse = ", ")` wider than the ML intervals (`r paste(years, collapse = ", ")`). `r if (all(w_sum[[6]] > w_sum[[5]] + 0.01)) "The extra width is larger far from the stations than near them: far from the stations the prediction depends more on the covariance parameters, whose uncertainty is now included." else "The extra width is small everywhere and does not grow with the distance to the stations: with about 180 stations per year, the uncertainty on the parameters adds only a little to the uncertainty of the prediction."` Near a station the width of the interval is driven by the nugget $\tau^2$, and the posterior median of $\tau^2$ is larger than its ML estimate in the three years (ML tends to underestimate the variances). The square root of the ratio of the two (last column: `r paste(round(w_sum[[7]], 2), collapse = ", ")`) is close to the width ratio near the stations (`r paste(round(w_sum[[5]], 2), collapse = ", ")`), which explains why the Bayesian intervals are wider there.
+
+# Part III: comparison with Homework 4 with proper scores
+
+We compare the Bayesian predictive distributions with the ML (plug-in) predictive distributions of Homework 4, on the rainfall in mm, with:
+
+- the **CRPS**, which compares the whole predictive distribution with the observed value (in mm; it reduces to the absolute error for a point prediction);
+- the **logarithmic score** (LogS), minus the log of the predictive density at the observed value, which penalises strongly the observations that the model found very unlikely;
+- the **coverage** of the 95 % intervals and their mean **width** (a sharper interval is better only if the coverage stays close to 95 %).
+
+For both scores, smaller is better. The scores must be computed **out of sample**: a station that was used to fit the model is predicted almost perfectly, so in-sample scores would favour the model that follows the data most closely, not the one that predicts best. We use two protocols.
+
+## 3.1 Leave-one-out, as in Homework 4
+
+Each station is removed and predicted from the others, with the parameters estimated on all the stations: the ML estimates for Homework 4, the posterior for the Bayesian model. This is the protocol of Homework 4, so the ML scores reproduce its values.
+
+```{r}
+#| label: loo-compare
+loo_sc <- do.call(rbind, lapply(years, function(yr) {
+  y <- yrs[[yr]]; X <- model.matrix(hw4[[yr]]$trend, y$data)
+  l <- loo_ml(log(y$z), X, y$co, ml[[yr]])
+  rbind(cbind(Year = yr, Method = "ML (Homework 4)", station = seq_along(y$z), score_ml(y$z, l$pred, sqrt(l$var_obs))),
+        cbind(Year = yr, Method = "Bayes", station = seq_along(y$z),
+              score_mix(y$z, loo_mix(post[[yr]], log(y$z), X, y$D, hw4[[yr]]$cov))))
+}))
+summ <- function(s) do.call(rbind, lapply(split(s, list(s$Method, s$Year), drop = TRUE), function(a)
+  data.frame(Year = a$Year[1], Method = a$Method[1], CRPS = mean(a$CRPS), LogS = mean(a$LogS),
+             `Coverage (%)` = 100 * mean(a$covered), `Mean width (mm)` = mean(a$width), check.names = FALSE)))
+loo_tab <- summ(loo_sc)
+knitr::kable(loo_tab[order(loo_tab$Year, loo_tab$Method), ], digits = 2, row.names = FALSE)
+```
+
+*Leave-one-out scores (parameters estimated on all the stations).*
+
+## 3.2 Ten-fold cross-validation with re-estimation
+
+In the leave-one-out above, the parameters were estimated with the station that is predicted, which is slightly optimistic and hides part of the parameter uncertainty. Here the stations are split into 10 groups; each group is predicted from the other 9, **after re-estimating the parameters** on those 9 groups: by ML for Homework 4, and by computing a new posterior with `krige.bayes` for the Bayesian model. The same groups are used for the two methods. Since the result can depend on the random split, the whole procedure is repeated with **3 different random splits**; the table gives the average over the 3 splits.
+
+```{r}
+#| label: kfold
+K <- 10; n_split <- 3
+kf_sc <- do.call(rbind, lapply(years, function(yr) do.call(rbind, lapply(seq_len(n_split), function(sp) {
+  y <- yrs[[yr]]; X <- model.matrix(hw4[[yr]]$trend, y$data); lz <- log(y$z); cv <- hw4[[yr]]$cov
+  set.seed(as.numeric(yr) + 1000 * (sp - 1)); fold <- sample(rep(seq_len(K), length.out = length(lz)))
+  out <- do.call(rbind, lapply(seq_len(K), function(k) {
+    tr <- fold != k; te <- fold == k
+    f  <- fit_ml(lz[tr], X[tr, , drop = FALSE], y$D[tr, tr], cv)
+    kk <- krige_uk(lz[tr], X[tr, , drop = FALSE], y$co[tr, ], X[te, , drop = FALSE], y$co[te, , drop = FALSE], f)
+    s  <- kb_post(y$data[tr, ], lz[tr], hw4[[yr]]$trend, cv)
+    mx <- pred_mix(s, lz[tr], X[tr, , drop = FALSE], y$co[tr, ], X[te, , drop = FALSE], y$co[te, , drop = FALSE], cv)
+    rbind(cbind(Year = yr, Method = "ML (Homework 4)", station = which(te), score_ml(y$z[te], kk$pred, sqrt(kk$var_obs))),
+          cbind(Year = yr, Method = "Bayes", station = which(te), score_mix(y$z[te], mx)))
+  }))
+  cbind(split = sp, out)
+}))))
+kf_tab <- summ(kf_sc)
+knitr::kable(kf_tab[order(kf_tab$Year, kf_tab$Method), ], digits = 2, row.names = FALSE)
+```
+
+*Ten-fold cross-validation scores (parameters re-estimated without the predicted stations), averaged over the 3 random splits.*
+
+```{r}
+#| label: differences
+d_one <- function(s) {          # station-by-station differences, Bayes minus ML
+  a <- s[s$Method == "Bayes", ]; b <- s[s$Method != "Bayes", ]
+  a <- a[order(a$station), ]; b <- b[order(b$station), ]
+  c(crps = 100 * mean(a$CRPS - b$CRPS) / mean(b$CRPS), logs = mean(a$LogS - b$LogS),
+    lower = 100 * mean(a$CRPS < b$CRPS))
+}
+dif_tab <- do.call(rbind, lapply(years, function(yr) {
+  l <- d_one(loo_sc[loo_sc$Year == yr, ])
+  k <- sapply(seq_len(n_split), function(sp) d_one(kf_sc[kf_sc$Year == yr & kf_sc$split == sp, ]))
+  data.frame(Year = yr, `CRPS diff. LOO (%)` = l["crps"],
+             `CRPS diff. 10-fold, split 1 (%)` = k["crps", 1], `split 2 (%)` = k["crps", 2],
+             `split 3 (%)` = k["crps", 3], `LogS diff. LOO` = l["logs"], `LogS diff. 10-fold (mean)` = mean(k["logs", ]),
+             `Stations where Bayes has the lower CRPS, LOO (%)` = l["lower"], check.names = FALSE)
+}))
+knitr::kable(dif_tab, digits = 2, row.names = FALSE)
+crps_k <- as.matrix(dif_tab[, 3:5])
+```
+
+*Mean differences of the scores, Bayes minus ML (negative values: Bayes better), computed station by station. The CRPS differences are in % of the mean CRPS of the ML model.*
+
+## 3.3 Discussion
+
+```{r}
+#| label: discussion-values
+cov_b <- kf_tab[kf_tab$Method == "Bayes", ]; cov_m <- kf_tab[kf_tab$Method != "Bayes", ]
+n_better <- rowSums(crps_k < 0)          # splits where Bayes has the lower CRPS, per year
+```
+
+- **Size of the differences.** In all the protocols, the mean CRPS of the two methods differ by at most `r round(max(abs(c(crps_k, dif_tab[[2]]))), 1)` %, which is small compared with the CRPS itself (about `r round(mean(kf_tab$CRPS))` mm). The two methods give very similar predictions, which is expected since they use the same model and around 180 stations per year.
+- **CRPS.** With the leave-one-out, the Bayesian model has a slightly lower CRPS in `r sum(dif_tab[[2]] < 0)` of the 3 years. With the 10-fold cross-validation, it is better in `r paste(paste0(years, ": ", n_better, "/3 splits"), collapse = ", ")`. The differences between methods are of the same size as the differences between two random splits, so the CRPS does not separate the two methods.
+- **LogS and calibration.** The LogS is lower for the Bayesian model in `r sum(c(dif_tab[[6]], dif_tab[[7]]) < 0)` of the `r 2 * length(years)` cases of the table, and the coverage of the 95 % intervals in the 10-fold cross-validation is `r paste(round(cov_b[["Coverage (%)"]], 1), "%", collapse = ", ")` for the Bayesian intervals against `r paste(round(cov_m[["Coverage (%)"]], 1), "%", collapse = ", ")` for the ML intervals. The Bayesian intervals are wider (`r paste(round(cov_b[["Mean width (mm)"]]), collapse = ", ")` mm against `r paste(round(cov_m[["Mean width (mm)"]]), collapse = ", ")` mm) because they include the uncertainty on the parameters; this helps for the observations far from their prediction, which the LogS penalises strongly.
+- **Station by station.** In the leave-one-out, the Bayesian model has the lower CRPS at only `r paste(round(dif_tab[[8]]), "%", collapse = ", ")` of the stations, even when its mean CRPS is lower: as expected with wider intervals, it loses a little at the many stations that are well predicted and gains at the few stations that are badly predicted.
+- **No significance test.** The scores station by station are not independent (each station is predicted from the same other stations), so the comparison is descriptive, and we do not conclude that one method is clearly superior for the CRPS.
+
+## Conclusion
+
+The Bayesian kriging of the three years gives median maps very close to the ML maps of Homework 4, and credibility intervals that are slightly wider (by `r round(100 * (min(w_sum[["Mean ratio Bayes / ML"]]) - 1), 1)` to `r round(100 * (max(w_sum[["Mean ratio Bayes / ML"]]) - 1), 1)` % on average), because they include the uncertainty on the covariance parameters. This uncertainty is real: the posterior of the range is wide and, in some years, depends on the prior, which confirms the weak identification of the range seen in Homework 3. The predictions, however, are robust to this choice, and the MCMC check with `spLM` converges to a posterior consistent with `krige.bayes`. On proper scores computed out of sample, the two methods are close: the CRPS does not separate them, while the LogS and the coverage are slightly better for the Bayesian model. The main gain of the Bayesian approach is a more honest account of the uncertainty rather than better point predictions.
+
+**Limitations.** The models (trend and covariance) are those selected in Homework 4 and are not selected again in the Bayesian framework. The priors on the range and on the relative nugget are discrete, which is an approximation. The 10-fold cross-validation uses 3 random splits of the stations; the differences between splits are of the same size as the differences between the methods. Finally, JAGS could fit the same model with full flexibility in the priors, but each iteration inverts a 180 × 180 matrix, which made it much slower than `krige.bayes` and `spLM` here.
+
+# Use of AI
+
+We used an AI assistant (Claude, by Anthropic) for this homework, with the prompt given at the beginning. It helped us write the R code of the Bayesian predictive distribution (exact quantiles and CRPS of the mixture), of the proper scores and of the cross-validations, the code of the maps, and a first draft of the comments. It also pointed out two problems in our first draft: the scores were computed at stations that had been used to fit the model (in-sample), and `krige.bayes` predicts by default the latent process without the nugget, while Homework 4 predicted a new observation. We chose the models (those of Homework 4), the priors and the comparison protocols, and we checked the code: our predictive distribution is compared with the output of `krige.bayes`, the ML scores reproduce those of Homework 4, and the MCMC check uses 3 chains with convergence diagnostics. We read and checked all the results and comments before submitting.
