@@ -2,7 +2,7 @@
 title: "Homework 4"
 format:
   html:
-    code-fold: false
+    code-fold: true
     toc: true
     embed-resources: true
 engine: knitr
