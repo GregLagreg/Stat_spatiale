@@ -242,7 +242,7 @@ knitr::kable(data.frame(Year = years, Model = sapply(hw4, `[[`, "label"),
 `krige.bayes` uses the approach of the course: the range $\phi$ and the relative nugget $\tau^2_R = \tau^2/\sigma^2$ are given **discrete** priors, and for each value of $(\phi, \tau^2_R)$ the posterior of $\beta$ and $\sigma^2$ is known in closed form (conjugate model). The priors are vague:
 
 | Parameter | Prior | Meaning |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | $\beta$ (trend) | flat, $p(\beta) \propto 1$ | no preference for any value |
 | $\sigma^2$ (partial sill) | reciprocal, $p(\sigma^2) \propto 1/\sigma^2$ | no preference for any scale |
 | $\phi$ (range) | uniform on 5, 10, …, 250 km | all ranges up to 250 km equally likely |

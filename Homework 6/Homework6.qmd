@@ -1,0 +1,489 @@
+---
+title: "Homework 6"
+format:
+  html:
+    code-fold: false
+    toc: true
+    embed-resources: true
+    html-math-method: katex
+engine: knitr
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(spBayes)
+library(bmstdr)
+library(coda)
+library(ggplot2)
+
+# Load wolfcamp data directly without loading geoR.dll
+lazyLoad(file.path(find.package("geoR"), "data", "Rdata"))
+
+coords <- as.matrix(wolfcamp$coords)
+z      <- as.numeric(wolfcamp$data)
+n      <- length(z)
+
+# Centre coordinates for better MCMC mixing of the linear trend
+x0 <- mean(coords[, 1]); y0 <- mean(coords[, 2])
+df <- data.frame(
+  x   = coords[, 1],
+  y   = coords[, 2],
+  x_c = coords[, 1] - x0,
+  y_c = coords[, 2] - y0,
+  z   = z
+)
+D_mat <- as.matrix(dist(coords))
+X_mat <- model.matrix(~ x_c + y_c, data = df)
+
+set.seed(2026)
+```
+
+## Homework 6
+
+In this homework we compare Bayesian spatial interpolation of the **Wolfcamp** aquifer data (85 piezometric head measurements, studied in Homeworks 1 and 3) using two R packages: **`spBayes`** (`spLM`) and **`bmstdr`** (`Bspatial`).
+
+Following Homework 1, the data exhibit a strong linear spatial trend and residual spatial dependence. We fit the same Gaussian geostatistical model with both packages:
+
+$$Z(s) = \beta_0 + \beta_1 x_c(s) + \beta_2 y_c(s) + W(s) + \varepsilon(s),$$
+
+where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance $\sigma^2 \exp(-h / \text{range})$, and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect.
+
+The workflow mirrors Homework 5:
+
+1.  fit the Bayesian model with **`spBayes`** (full MCMC with 3 chains, traceplots, $\hat{R}$, effective sample size) and **`bmstdr`** (`Bspatial` with `package = "none"`, conjugate Bayesian spatial model), alongside ML estimates;
+
+2.  predict on a $20 \times 20$ grid and build pointwise 95 % posterior predictive intervals for a **new observation** (including the nugget);
+
+3.  compare both packages out of sample using 5-fold cross-validation with parameter re-estimation and proper scoring rules (RMSE, CRPS, LogS, IS95, coverage and width).
+
+## Part I: Bayesian estimation (`spBayes` vs `bmstdr`)
+
+### 1.1 Functions and ML reference
+
+```{r}
+#| label: functions
+#| code-fold: true
+cross_dist <- function(a, b) {
+  sqrt(outer(a[, 1], b[, 1], "-")^2 + outer(a[, 2], b[, 2], "-")^2)
+}
+
+# ML fit (reference, exponential covariance)
+fit_ml_exp <- function(z, X, D) {
+  n <- length(z)
+  maxd <- max(D)
+  gls_ml <- function(range_val, nu) {
+    R  <- chol(exp(-D / range_val) + diag(nu, n))
+    Xs <- backsolve(R, X, transpose = TRUE)
+    zs <- backsolve(R, z, transpose = TRUE)
+    beta <- solve(crossprod(Xs), crossprod(Xs, zs))
+    s2   <- sum((zs - Xs %*% beta)^2) / n
+    list(logLik = -0.5 * (n * log(2 * pi) + 2 * sum(log(diag(R))) + n * log(s2) + n),
+         beta = c(beta), sigma2 = s2)
+  }
+  nll <- function(p) {
+    v <- tryCatch(-gls_ml(exp(p[1]), exp(p[2]))$logLik, error = function(e) 1e10)
+    if (is.finite(v)) v else 1e10
+  }
+  o <- optim(log(c(0.3 * maxd, 0.2)), nll, method = "L-BFGS-B",
+             lower = log(c(1, 1e-4)), upper = log(c(3 * maxd, 100)))
+  r_hat <- exp(o$par[1]); nu_hat <- exp(o$par[2])
+  g <- gls_ml(r_hat, nu_hat)
+  list(beta = g$beta, sigma2 = g$sigma2, tau2 = nu_hat * g$sigma2, range = r_hat)
+}
+
+# Posterior predictive Gaussian mixture for a NEW observation (with nugget)
+pred_mix_norm <- function(post_df, z_tr, X_tr, co_tr, X_te, co_te) {
+  n_tr <- length(z_tr); m_te <- nrow(co_te); S <- nrow(post_df)
+  D_tr <- as.matrix(dist(co_tr))
+  D_cr <- cross_dist(co_tr, co_te)
+  M <- V <- matrix(NA_real_, m_te, S)
+  for (s in seq_len(S)) {
+    sig2 <- post_df$sigma2[s]
+    tau2 <- post_df$tau2[s]
+    rng  <- post_df$range[s]
+    b    <- c(post_df$beta0[s], post_df$beta1[s], post_df$beta2[s])
+    
+    Sigma <- sig2 * exp(-D_tr / rng) + diag(tau2, n_tr)
+    C0    <- sig2 * exp(-D_cr / rng)
+    R     <- chol(Sigma)
+    A     <- t(backsolve(R, backsolve(R, C0, transpose = TRUE)))
+    
+    M[, s] <- as.vector(X_te %*% b + A %*% (z_tr - X_tr %*% b))
+    V[, s] <- pmax(sig2 + tau2 - rowSums(A * t(C0)), 1e-9)
+  }
+  list(M = M, V = V)
+}
+
+# Exact quantiles of a mixture of normals by bisection
+mix_quantile <- function(M, V, p) {
+  S <- sqrt(V)
+  lo <- apply(M - 6 * S, 1, min)
+  hi <- apply(M + 6 * S, 1, max)
+  for (it in 1:40) {
+    mid <- (lo + hi) / 2
+    up  <- rowMeans(pnorm((mid - M) / S)) < p
+    lo[up] <- mid[up]; hi[!up] <- mid[!up]
+  }
+  (lo + hi) / 2
+}
+
+# CRPS of a mixture of normals (numerical integration)
+crps_mix_norm <- function(y, M, V, nt = 120) {
+  S <- sqrt(V)
+  sapply(seq_along(y), function(i) {
+    a <- min(M[i, ] - 6 * S[i, ], y[i])
+    b <- max(M[i, ] + 6 * S[i, ], y[i])
+    part <- function(t, ind) {
+      F <- colMeans(pnorm(outer(-M[i, ], t, "+") / S[i, ]))
+      g <- (F - ind)^2
+      sum(diff(t) * (head(g, -1) + tail(g, -1)) / 2)
+    }
+    part(seq(a, y[i], length.out = nt), 0) + part(seq(y[i], b, length.out = nt), 1)
+  })
+}
+
+# Proper scores from a Gaussian mixture (spBayes)
+score_mix_norm <- function(y, mix) {
+  dens  <- rowMeans(dnorm(matrix(y, nrow(mix$M), ncol(mix$M)), mix$M, sqrt(mix$V)))
+  pred  <- mix_quantile(mix$M, mix$V, 0.5)
+  lower <- mix_quantile(mix$M, mix$V, 0.025)
+  upper <- mix_quantile(mix$M, mix$V, 0.975)
+  width <- upper - lower
+  is95  <- width + 40 * pmax(lower - y, 0) + 40 * pmax(y - upper, 0)
+  data.frame(
+    y = y, pred = pred, lower = lower, upper = upper,
+    CRPS = crps_mix_norm(y, mix$M, mix$V),
+    LogS = -log(pmax(dens, 1e-300)),
+    IS95 = is95,
+    covered = (y >= lower & y <= upper),
+    width = width
+  )
+}
+
+# Proper scores from posterior predictive draws (bmstdr: n_te x N matrix)
+score_draws <- function(y, draws) {
+  if (nrow(draws) != length(y)) draws <- t(draws)
+  pred  <- apply(draws, 1, median)
+  lower <- apply(draws, 1, quantile, probs = 0.025)
+  upper <- apply(draws, 1, quantile, probs = 0.975)
+  width <- upper - lower
+  is95  <- width + 40 * pmax(lower - y, 0) + 40 * pmax(y - upper, 0)
+  
+  # Empirical CRPS: E|X - y| - 0.5 E|X - X'|
+  crps_vec <- sapply(seq_along(y), function(i) {
+    x <- sort(draws[i, ])
+    m <- length(x)
+    e1 <- mean(abs(x - y[i]))
+    e2 <- sum((2 * seq_len(m) - m - 1) * x) / (m^2)
+    e1 - e2
+  })
+  # Normal approximation to predictive density for LogS
+  mu_d <- rowMeans(draws)
+  sd_d <- apply(draws, 1, sd)
+  logs_vec <- -dnorm(y, mean = mu_d, sd = sd_d, log = TRUE)
+  
+  data.frame(
+    y = y, pred = pred, lower = lower, upper = upper,
+    CRPS = crps_vec, LogS = logs_vec, IS95 = is95,
+    covered = (y >= lower & y <= upper), width = width
+  )
+}
+
+ci_str <- function(v) sprintf("%.1f [%.1f, %.1f]", median(v), quantile(v, 0.025), quantile(v, 0.975))
+```
+
+```{r}
+#| label: ml-ref
+ml_fit <- fit_ml_exp(z, X_mat, D_mat)
+```
+
+### 1.2 Fitting with spBayes (spLM)
+
+We run 3 chains of 10 000 iterations each from dispersed starting values (discarding the first 5 000 as burn-in), with a flat prior on $\beta$, $\phi_{\text{decay}} = 1/\text{range} \sim \text{Uniform}(1/300, 1/5)$, $\sigma^2 \sim \text{IG}(2, 20000)$, and $\tau^2 \sim \text{IG}(2, 5000)$.
+
+```{r}
+#| label: fit-spbayes
+fit_spbayes_chains <- function(d, co, n_it = 10000, burn = 5000) {
+  starts <- list(
+    list(phi = 1 / 20,  sigma.sq = 10000, tau.sq = 2000),
+    list(phi = 1 / 80,  sigma.sq = 25000, tau.sq = 5000),
+    list(phi = 1 / 200, sigma.sq = 50000, tau.sq = 10000)
+  )
+  chains_kept <- vector("list", 3)
+  for (ch in 1:3) {
+    set.seed(100 + ch)
+    m <- spLM(
+      z ~ x_c + y_c, data = d, coords = co, cov.model = "exponential",
+      starting = starts[[ch]],
+      tuning   = list(phi = 0.5, sigma.sq = 0.5, tau.sq = 0.5),
+      priors   = list(beta.Flat = TRUE, phi.Unif = c(1 / 300, 1 / 5),
+                      sigma.sq.IG = c(2, 20000), tau.sq.IG = c(2, 5000)),
+      amcmc    = list(n.batch = n_it / 25, batch.length = 25, accept.rate = 0.43),
+      verbose  = FALSE
+    )
+    rec  <- spRecover(m, start = burn + 1, thin = 5, get.w = FALSE, verbose = FALSE)
+    B    <- rec$p.beta.recover.samples
+    th_k <- rec$p.theta.recover.samples
+    
+    chains_kept[[ch]] <- mcmc(cbind(
+      beta0  = B[, 1],
+      beta1  = B[, 2],
+      beta2  = B[, 3],
+      sigma2 = th_k[, "sigma.sq"],
+      tau2   = th_k[, "tau.sq"],
+      range  = 1 / th_k[, "phi"]
+    ))
+  }
+  mcmc.list(chains_kept)
+}
+
+t0 <- proc.time()
+spb_kept <- fit_spbayes_chains(df, coords)
+t_spb <- (proc.time() - t0)[["elapsed"]]
+```
+
+### 1.3 Fitting with bmstdr (Bspatial)
+
+In bmstdr, Bspatial(package = "none", model = "spat") fits an exact conjugate Bayesian spatial linear model (Normal-Inverse-Gamma prior on $(\beta, \sigma^2)$) for a fixed spatial decay parameter $\phi_{\text{decay}} = 1/\text{range}$ (here set to the ML decay 1 / ml_fit\$range).
+
+```{r}
+#| label: fit-bmstdr
+t0 <- proc.time()
+bm_fit <- Bspatial(
+  package   = "none",
+  model     = "spat",
+  formula   = z ~ x_c + y_c,
+  data      = df,
+  coordtype = "plain",
+  coords    = 1:2,
+  phi       = 1 / ml_fit$range,
+  prior.sigma2 = c(2, 20000),
+  N         = 2000,
+  mchoice   = FALSE,
+  plotit    = FALSE,
+  verbose   = FALSE
+)
+t_bm <- (proc.time() - t0)[["elapsed"]]
+```
+
+### 1.4 Convergence diagnostics and parameter comparison
+
+```{r}
+#| label: diag-table
+params <- c("beta0", "beta1", "beta2", "sigma2", "tau2", "range")
+spb_mat <- as.matrix(spb_kept)[, params]
+g_spb   <- gelman.diag(spb_kept[, params], autoburnin = FALSE)$psrf[, 1]
+e_spb   <- effectiveSize(spb_kept[, params])
+
+ml_vec <- c(ml_fit$beta[1], ml_fit$beta[2], ml_fit$beta[3], ml_fit$sigma2, ml_fit$tau2, ml_fit$range)
+
+# Extract bmstdr parameter summaries
+bm_p <- bm_fit$params
+bm_str <- c(
+  sprintf("%.1f [%.1f, %.1f]", bm_p[1, "mean"], bm_p[1, "low"], bm_p[1, "up"]),
+  sprintf("%.1f [%.1f, %.1f]", bm_p[2, "mean"], bm_p[2, "low"], bm_p[2, "up"]),
+  sprintf("%.1f [%.1f, %.1f]", bm_p[3, "mean"], bm_p[3, "low"], bm_p[3, "up"]),
+  sprintf("%.1f [%.1f, %.1f]", bm_p["sigma2", "mean"], bm_p["sigma2", "low"], bm_p["sigma2", "up"]),
+  "fixed via ratio",
+  sprintf("%.1f (fixed)", ml_fit$range)
+)
+
+diag_tab <- data.frame(
+  Parameter = params,
+  ML = round(ml_vec, 2),
+  `spBayes: median [95% CI]` = apply(spb_mat, 2, ci_str),
+  `spBayes R-hat` = round(g_spb, 3),
+  `spBayes ESS`   = round(e_spb),
+  `bmstdr: mean [95% CI]` = bm_str,
+  check.names = FALSE
+)
+knitr::kable(diag_tab, row.names = FALSE,
+             caption = sprintf("Parameter estimates and MCMC diagnostics (runtime: spBayes = %.1f s, bmstdr = %.2f s).", t_spb, t_bm))
+```
+
+```{r}
+#| label: traceplots
+#| fig-width: 10
+#| fig-height: 3.5
+tr_df <- do.call(rbind, lapply(seq_along(spb_kept), function(ch) {
+  v <- as.numeric(spb_kept[[ch]][, "range"])
+  data.frame(Chain = factor(ch), Iteration = seq_along(v), range = v)
+}))
+ggplot(tr_df, aes(Iteration, range, colour = Chain)) +
+  geom_line(linewidth = 0.25, alpha = 0.8) +
+  scale_y_log10() +
+  labs(title = "spBayes post-burn-in traceplots of the range parameter (3 chains)",
+       y = "Range (miles, log scale)") +
+  theme_minimal()
+```
+
+In spBayes, the 3 chains overlap well after burn-in with $\hat{R} \approx 1$, confirming convergence. bmstdr (package = "none") is almost instantaneous because it uses exact conjugate updating given a fixed decay $\phi$, whereas spBayes integrates over the full uncertainty of $\phi$, $\sigma^2$, and $\tau^2$ via MCMC.
+
+## Part II: Posterior predictive intervals on a $20 \times 20$ grid
+
+We construct the $20 \times 20$ grid covering the Wolfcamp domain (as in Homework 1) and compute the pointwise predictive median and 95 % posterior predictive intervals for both packages.
+
+```{r}
+#| label: grid-pred
+ngrid <- 20
+gx <- seq(min(df$x), max(df$x), length.out = ngrid)
+gy <- seq(min(df$y), max(df$y), length.out = ngrid)
+grid_df <- expand.grid(x = gx, y = gy)
+grid_df$x_c <- grid_df$x - x0
+grid_df$y_c <- grid_df$y - y0
+grid_df$z   <- mean(z) # placeholder for bmstdr validrows (not used in fitting)
+X_grid  <- model.matrix(~ x_c + y_c, data = grid_df)
+co_grid <- as.matrix(grid_df[, c("x", "y")])
+
+# 1. spBayes grid predictions (1000 posterior draws)
+idx_spb <- round(seq(1, nrow(spb_mat), length.out = 1000))
+mx_spb  <- pred_mix_norm(as.data.frame(spb_mat[idx_spb, ]), z, X_mat, coords, X_grid, co_grid)
+q_spb   <- sapply(c(0.025, 0.5, 0.975), function(p) mix_quantile(mx_spb$M, mx_spb$V, p))
+g_spb_df <- data.frame(Package = "spBayes", x = grid_df$x, y = grid_df$y,
+                       lower = q_spb[, 1], median = q_spb[, 2], upper = q_spb[, 3],
+                       width = q_spb[, 3] - q_spb[, 1])
+
+# 2. bmstdr grid predictions via validrows
+df_all <- rbind(df, grid_df)
+bm_grid <- Bspatial(
+  package   = "none",
+  model     = "spat",
+  formula   = z ~ x_c + y_c,
+  data      = df_all,
+  coordtype = "plain",
+  coords    = 1:2,
+  validrows = (n + 1):nrow(df_all),
+  phi       = 1 / ml_fit$range,
+  prior.sigma2 = c(2, 20000),
+  N         = 2000,
+  mchoice   = FALSE,
+  plotit    = FALSE,
+  verbose   = FALSE
+)
+bm_draws <- bm_grid$valpreds
+if (nrow(bm_draws) != nrow(grid_df)) bm_draws <- t(bm_draws)
+g_bm_df <- data.frame(
+  Package = "bmstdr", x = grid_df$x, y = grid_df$y,
+  lower   = apply(bm_draws, 1, quantile, probs = 0.025),
+  median  = apply(bm_draws, 1, median),
+  upper   = apply(bm_draws, 1, quantile, probs = 0.975)
+)
+g_bm_df$width <- g_bm_df$upper - g_bm_df$lower
+g_all <- rbind(g_spb_df, g_bm_df)
+```
+
+```{r}
+#| label: maps-ci
+#| fig-width: 10
+#| fig-height: 6.5
+mp <- rbind(
+  data.frame(g_all[, c("Package", "x", "y")], value = g_all$lower,  what = "Lower bound (2.5%)"),
+  data.frame(g_all[, c("Package", "x", "y")], value = g_all$median, what = "Median"),
+  data.frame(g_all[, c("Package", "x", "y")], value = g_all$upper,  what = "Upper bound (97.5%)")
+)
+mp$what <- factor(mp$what, levels = c("Lower bound (2.5%)", "Median", "Upper bound (97.5%)"))
+
+ggplot(mp, aes(x, y, fill = value)) +
+  geom_raster() +
+  geom_point(data = df, aes(x, y), inherit.aes = FALSE, size = 0.7, alpha = 0.7) +
+  facet_grid(Package ~ what) +
+  coord_equal() +
+  scale_fill_viridis_c(name = "Head (ft)") +
+  labs(title = "Posterior predictive median and 95% intervals (20x20 grid)") +
+  theme_minimal()
+```
+
+```{r}
+#| label: grid-diff
+comp_grid <- data.frame(
+  `Correlation of medians` = cor(g_spb_df$median, g_bm_df$median),
+  `Max abs. diff. of medians (ft)` = max(abs(g_spb_df$median - g_bm_df$median)),
+  `Mean width spBayes (ft)` = mean(g_spb_df$width),
+  `Mean width bmstdr (ft)`  = mean(g_bm_df$width),
+  `Mean width ratio (bmstdr / spBayes)` = mean(g_bm_df$width / g_spb_df$width),
+  check.names = FALSE
+)
+knitr::kable(comp_grid, digits = 3, row.names = FALSE,
+             caption = "Agreement between spBayes and bmstdr predictions on the 20x20 grid.")
+```
+
+## Part III: Out-of-sample comparison
+
+We perform a 5-fold cross-validation where both models are re-estimated from scratch on each training fold (68 observations) and evaluated on the held-out fold (17 observations) using proper scoring rules: RMSE, CRPS, LogS, IS95, 95 % coverage, and mean interval width.
+
+```{r}
+#| label: cv-5fold
+K <- 5
+set.seed(2026)
+fold <- sample(rep(seq_len(K), length.out = n))
+
+cv_res <- do.call(rbind, lapply(seq_len(K), function(k) {
+  tr <- which(fold != k); te <- which(fold == k)
+  d_tr <- df[tr, ]; co_tr <- coords[tr, ]; X_tr <- X_mat[tr, , drop = FALSE]; z_tr <- z[tr]
+  co_te <- coords[te, , drop = FALSE]; X_te <- X_mat[te, , drop = FALSE]; z_te <- z[te]
+  
+  # 1. spBayes on training fold
+  m_spb <- spLM(
+    z ~ x_c + y_c, data = d_tr, coords = co_tr, cov.model = "exponential",
+    starting = list(phi = 1 / 80, sigma.sq = 25000, tau.sq = 5000),
+    tuning   = list(phi = 0.5, sigma.sq = 0.5, tau.sq = 0.5),
+    priors   = list(beta.Flat = TRUE, phi.Unif = c(1 / 300, 1 / 5),
+                    sigma.sq.IG = c(2, 20000), tau.sq.IG = c(2, 5000)),
+    amcmc    = list(n.batch = 240, batch.length = 25, accept.rate = 0.43),
+    verbose  = FALSE
+  )
+  rec <- spRecover(m_spb, start = 3001, thin = 6, get.w = FALSE, verbose = FALSE)
+  B_k  <- as.matrix(rec$p.beta.recover.samples)
+  th_k <- as.matrix(rec$p.theta.recover.samples)
+  post_spb <- data.frame(
+    beta0  = as.numeric(B_k[, 1]),
+    beta1  = as.numeric(B_k[, 2]),
+    beta2  = as.numeric(B_k[, 3]),
+    sigma2 = as.numeric(th_k[, "sigma.sq"]),
+    tau2   = as.numeric(th_k[, "tau.sq"]),
+    range  = 1 / as.numeric(th_k[, "phi"])
+  )
+  mx_s <- pred_mix_norm(post_spb, z_tr, X_tr, co_tr, X_te, co_te)
+  
+  # 2. bmstdr on training fold (re-estimating ML decay on training fold only)
+  ml_tr <- fit_ml_exp(z_tr, X_tr, D_mat[tr, tr])
+  bm_k <- Bspatial(
+    package   = "none",
+    model     = "spat",
+    formula   = z ~ x_c + y_c,
+    data      = df,
+    coordtype = "plain",
+    coords    = 1:2,
+    validrows = te,
+    phi       = 1 / ml_tr$range,
+    prior.sigma2 = c(2, 20000),
+    N         = 2000,
+    mchoice   = FALSE,
+    plotit    = FALSE,
+    verbose   = FALSE
+  )
+  
+  rbind(
+    cbind(Package = "spBayes", fold = k, id = te, score_mix_norm(z_te, mx_s)),
+    cbind(Package = "bmstdr",  fold = k, id = te, score_draws(z_te, bm_k$valpreds))
+  )
+}))
+
+cv_tab <- do.call(rbind, lapply(split(cv_res, cv_res$Package), function(a) {
+  data.frame(
+    Package = a$Package[1],
+    `RMSE (ft)` = sqrt(mean((a$y - a$pred)^2)),
+    `CRPS (ft)` = mean(a$CRPS),
+    LogS        = mean(a$LogS),
+    `IS95 (ft)` = mean(a$IS95),
+    `Coverage (%)` = 100 * mean(a$covered),
+    `Mean width (ft)` = mean(a$width),
+    check.names = FALSE
+  )
+}))
+knitr::kable(cv_tab, digits = 2, row.names = FALSE,
+             caption = "5-fold cross-validation scores on the Wolfcamp data (parameters re-estimated in each fold).")
+```
