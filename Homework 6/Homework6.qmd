@@ -49,7 +49,7 @@ Following Homework 1, the data exhibit a strong linear spatial trend and residua
 
 $$Z(s) = \beta_0 + \beta_1 x_c(s) + \beta_2 y_c(s) + W(s) + \varepsilon(s),$$
 
-where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance $\sigma^2 \exp(-h / \text{range})$, and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect.
+where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance \$\\sigma\^2 \\exp(-h / \\phi)\$, and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect.
 
 The workflow mirrors Homework 5:
 
@@ -281,12 +281,12 @@ e_spb   <- effectiveSize(spb_kept[, params])
 ml_vec <- c(ml_fit$beta[1], ml_fit$beta[2], ml_fit$beta[3], ml_fit$sigma2, ml_fit$tau2, ml_fit$range)
 
 # Extract bmstdr parameter summaries
+# Extract bmstdr parameter summaries (by column index: 1 = mean, 3 = 2.5%, 4 = 97.5% or via summary)
 bm_p <- bm_fit$params
+fmt_bm <- function(row_idx) sprintf("%.1f [%.1f, %.1f]", bm_p[row_idx, 1], bm_p[row_idx, 3], bm_p[row_idx, 4])
 bm_str <- c(
-  sprintf("%.1f [%.1f, %.1f]", bm_p[1, "mean"], bm_p[1, "low"], bm_p[1, "up"]),
-  sprintf("%.1f [%.1f, %.1f]", bm_p[2, "mean"], bm_p[2, "low"], bm_p[2, "up"]),
-  sprintf("%.1f [%.1f, %.1f]", bm_p[3, "mean"], bm_p[3, "low"], bm_p[3, "up"]),
-  sprintf("%.1f [%.1f, %.1f]", bm_p["sigma2", "mean"], bm_p["sigma2", "low"], bm_p["sigma2", "up"]),
+  fmt_bm(1), fmt_bm(2), fmt_bm(3),
+  if ("sigma2" %in% rownames(bm_p)) fmt_bm("sigma2") else fmt_bm(4),
   "fixed via ratio",
   sprintf("%.1f (fixed)", ml_fit$range)
 )
@@ -320,7 +320,7 @@ ggplot(tr_df, aes(Iteration, range, colour = Chain)) +
   theme_minimal()
 ```
 
-In spBayes, the 3 chains overlap well after burn-in with $\hat{R} \approx 1$, confirming convergence. bmstdr (package = "none") is almost instantaneous because it uses exact conjugate updating given a fixed decay $\phi$, whereas spBayes integrates over the full uncertainty of $\phi$, $\sigma^2$, and $\tau^2$ via MCMC.
+In `spBayes`, the three MCMC chains mix well and overlap across the full post-burn-in sample, with $\hat{R} \le 1.001$ for all six parameters and effective sample sizes ranging from 626 (`range`) to 3 206 (`beta1`). Both Bayesian packages yield point estimates for the trend ($\beta_0, \beta_1, \beta_2$) that are virtually identical to the ML estimates, as well as very similar estimates for the partial sill $\sigma^2$ (6 845.8 for `spBayes` vs 6 351.8 for `bmstdr`, both larger than the ML estimate of 3 715.8). However, because `bmstdr` (`package = "none"`) conditions on a fixed spatial range (34.1 miles), its 95 % credible intervals are noticeably narrower than those of `spBayes`—most clearly for $\beta_0$ (\[588.4, 666.4\] vs \[535.2, 740.1\]) and $\sigma^2$ (\[4 723.6, 8 528.7\] vs \[3 175.5, 17 186.2\]). In `spBayes`, the 95 % credible interval for the range is very wide (\[33.2, 276.0\] miles, median 114.7), confirming the weak identifiability of the range on 85 observations already noted in Homework 3. Finally, `bmstdr` is about 30 times faster than `spBayes` (0.64 s vs 19.6 s) because exact conjugate updating avoids MCMC.
 
 ## Part II: Posterior predictive intervals on a $20 \times 20$ grid
 
@@ -410,6 +410,8 @@ knitr::kable(comp_grid, digits = 3, row.names = FALSE,
              caption = "Agreement between spBayes and bmstdr predictions on the 20x20 grid.")
 ```
 
+Both packages produce nearly identical spatial interpolation maps on the $20 \times 20$ grid: the piezometric head decreases smoothly from the southwest (\~1 100–1 250 ft) to the northeast (\~250 ft). The correlation between the two predictive medians is 0.998, with a maximum absolute difference of 38.8 ft (mostly in sparsely sampled corners of the grid). The 95 % posterior predictive intervals are also very close in width on average (241.5 ft for `spBayes` vs 253.0 ft for `bmstdr`, ratio = 1.043), showing that despite their different treatment of covariance parameter uncertainty, both packages agree strongly on the spatial surface and its uncertainty.
+
 ## Part III: Out-of-sample comparison
 
 We perform a 5-fold cross-validation where both models are re-estimated from scratch on each training fold (68 observations) and evaluated on the held-out fold (17 observations) using proper scoring rules: RMSE, CRPS, LogS, IS95, 95 % coverage, and mean interval width.
@@ -487,3 +489,19 @@ cv_tab <- do.call(rbind, lapply(split(cv_res, cv_res$Package), function(a) {
 knitr::kable(cv_tab, digits = 2, row.names = FALSE,
              caption = "5-fold cross-validation scores on the Wolfcamp data (parameters re-estimated in each fold).")
 ```
+
+Out of sample (5-fold cross-validation with parameter re-estimation in every fold), both packages achieve very similar predictive performance:
+
+- **Point accuracy (RMSE):** `spBayes` is slightly more accurate than `bmstdr` (53.42 ft vs 54.14 ft, a difference of \~1.3 %).
+
+- **Distributional accuracy (CRPS & LogS):** `spBayes` achieves a slightly lower CRPS (29.36 ft vs 29.79 ft), while both packages obtain the exact same logarithmic score (5.36).
+
+- **Interval calibration (Coverage, Width & IS95):** `spBayes` produces slightly wider 95 % predictive intervals on average (215.47 ft vs 205.58 ft) because it propagates the posterior uncertainty of $\phi$, $\sigma^2$, and $\tau^2$. As a result, its empirical coverage is higher (97.65 % vs 94.12 % for `bmstdr`, which is very close to the nominal 95 % target). Because the extra width is not offset by fewer severe misses on this dataset, `bmstdr` achieves a slightly lower 95 % interval score (IS95 = 250.33 ft vs 254.50 ft).
+
+## Conclusion
+
+On the Wolfcamp dataset ($n = 85$), **spBayes** and **bmstdr** (`package = "none"`) yield highly consistent spatial interpolations (grid median correlation = 0.998) and nearly indistinguishable out-of-sample proper scores (RMSE $\approx 53$–$54$ ft, CRPS $\approx 29$–$30$ ft, LogS $= 5.36$). The trade-off is primarily practical and conceptual: `bmstdr` is \~30 times faster (0.64 s vs 19.6 s) and well calibrated (94.1 % coverage) when a reasonable ML estimate of the spatial decay $\phi$ is plugged in, whereas `spBayes` provides a full Bayesian propagation of uncertainty across all covariance parameters (leading to slightly more conservative intervals with 97.7 % coverage and marginally better RMSE and CRPS).
+
+# Use of AI
+
+We used an AI assistant (Gemini, by Google) for this homework. Following our decision to adapt the methodology of Homework 5 to the Wolfcamp dataset (Homeworks 1 and 3), the AI helped us write the R code for the Bayesian estimation with `spBayes` (`spLM`) and `bmstdr` (`Bspatial`), the exact Gaussian-mixture predictive distribution, the proper scoring rules (RMSE, CRPS, LogS, IS95), the $20 \times 20$ prediction maps, and the 5-fold cross-validation, as well as a first draft of the interpretations.
