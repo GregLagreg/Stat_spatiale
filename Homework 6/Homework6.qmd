@@ -49,7 +49,7 @@ Following Homework 1, the data exhibit a strong linear spatial trend and residua
 
 $$Z(s) = \beta_0 + \beta_1 x_c(s) + \beta_2 y_c(s) + W(s) + \varepsilon(s),$$
 
-where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance \$\\sigma\^2 \\exp(-h / \\phi)\$, and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect.
+where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance $\sigma^2 \exp(-h / \phi)$, and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect.
 
 The workflow mirrors Homework 5:
 
