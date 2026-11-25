@@ -1,0 +1,516 @@
+---
+title: "Homework 6"
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+```{r}
+#| label: setup
+library(bmstdr)
+library(spBayes)   # used by Bspatial(package = "spBayes")
+library(rstan)     # used by Bspatial(package = "stan")
+library(coda)
+library(ggplot2)
+
+# Load wolfcamp data directly without loading geoR.dll
+lazyLoad(file.path(find.package("geoR"), "data", "Rdata"))
+
+coords <- as.matrix(wolfcamp$coords)
+z      <- as.numeric(wolfcamp$data)
+n      <- length(z)
+
+# Centre coordinates for better MCMC mixing of the linear trend
+x0 <- mean(coords[, 1]); y0 <- mean(coords[, 2])
+df <- data.frame(
+  x   = coords[, 1],
+  y   = coords[, 2],
+  x_c = coords[, 1] - x0,
+  y_c = coords[, 2] - y0,
+  z   = z
+)
+D_mat <- as.matrix(dist(coords))
+X_mat <- model.matrix(~ x_c + y_c, data = df)
+set.seed(2026)
+```
+
+# Homework 6
+
+In this homework we compare Bayesian spatial interpolation of the Wolfcamp aquifer data (85 piezometric head measurements, studied in Homeworks 1 and 3) using the three computational back-ends offered by the same function `Bspatial()` of the **bmstdr** package:
+
+- `package = "none"`: exact conjugate Bayesian spatial model (no MCMC, spatial decay $\phi$ fixed);
+- `package = "spBayes"`: MCMC through `spBayes::spLM`, with a prior on $\phi$;
+- `package = "stan"`: Hamiltonian Monte Carlo through Stan, with a prior on $\phi$.
+
+Following Homework 1, the data exhibit a strong linear spatial trend and residual spatial dependence. The model is
+
+$$
+Z(s) = \beta_0 + \beta_1 x_c(s) + \beta_2 y_c(s) + W(s) + \varepsilon(s),
+$$
+
+where $x_c, y_c$ are the centred coordinates, $W(s)$ is a zero-mean Gaussian process with exponential covariance $\sigma^2 \exp(-h \phi)$ ($\phi = 1/\text{range}$) and $\varepsilon(s) \sim \mathcal{N}(0, \tau^2)$ is the nugget effect (not present in `package = "none"`).
+
+The workflow is the same for the three methods:
+
+1. fit the model, compare parameter estimates with the ML reference and **plot the posterior distributions of all parameters** for the three methods;
+2. predict on a $20 \times 20$ grid and build pointwise 95 % posterior predictive intervals;
+3. compare out of sample with 5-fold cross-validation (parameters re-estimated in every fold) and proper scoring rules (RMSE, CRPS, LogS, IS95, coverage and width).
+
+# Part I: Bayesian estimation (none vs spBayes vs stan)
+
+## 1.1 Functions and ML reference
+
+```{r}
+#| label: functions
+# ML fit (reference, exponential covariance with nugget)
+fit_ml_exp <- function(z, X, D) {
+  n <- length(z)
+  maxd <- max(D)
+  gls_ml <- function(range_val, nu) {
+    R  <- chol(exp(-D / range_val) + diag(nu, n))
+    Xs <- backsolve(R, X, transpose = TRUE)
+    zs <- backsolve(R, z, transpose = TRUE)
+    beta <- solve(crossprod(Xs), crossprod(Xs, zs))
+    s2   <- sum((zs - Xs %*% beta)^2) / n
+    list(logLik = -0.5 * (n * log(2 * pi) + 2 * sum(log(diag(R))) + n * log(s2) + n),
+         beta = c(beta), sigma2 = s2)
+  }
+  nll <- function(p) {
+    v <- tryCatch(-gls_ml(exp(p[1]), exp(p[2]))$logLik, error = function(e) 1e10)
+    if (is.finite(v)) v else 1e10
+  }
+  o <- optim(log(c(0.3 * maxd, 0.2)), nll, method = "L-BFGS-B",
+             lower = log(c(1, 1e-4)), upper = log(c(3 * maxd, 100)))
+  r_hat <- exp(o$par[1]); nu_hat <- exp(o$par[2])
+  g <- gls_ml(r_hat, nu_hat)
+  list(beta = g$beta, sigma2 = g$sigma2, tau2 = nu_hat * g$sigma2, range = r_hat)
+}
+
+# Proper scores from posterior predictive draws (bmstdr: n_te x N matrix)
+score_draws <- function(y, draws) {
+  draws <- as.matrix(draws)
+  if (nrow(draws) != length(y)) draws <- t(draws)
+  pred  <- apply(draws, 1, median)
+  lower <- apply(draws, 1, quantile, probs = 0.025)
+  upper <- apply(draws, 1, quantile, probs = 0.975)
+  width <- upper - lower
+  is95  <- width + 40 * pmax(lower - y, 0) + 40 * pmax(y - upper, 0)
+  # Empirical CRPS: E|X - y| - 0.5 E|X - X'|
+  crps_vec <- sapply(seq_along(y), function(i) {
+    x <- sort(draws[i, ])
+    m <- length(x)
+    e1 <- mean(abs(x - y[i]))
+    e2 <- sum((2 * seq_len(m) - m - 1) * x) / (m^2)
+    e1 - e2
+  })
+  # Normal approximation to the predictive density for LogS
+  mu_d <- rowMeans(draws)
+  sd_d <- apply(draws, 1, sd)
+  logs_vec <- -dnorm(y, mean = mu_d, sd = sd_d, log = TRUE)
+  data.frame(
+    y = y, pred = pred, lower = lower, upper = upper,
+    CRPS = crps_vec, LogS = logs_vec, IS95 = is95,
+    covered = (y >= lower & y <= upper), width = width
+  )
+}
+
+ci_str <- function(v) sprintf("%.1f [%.1f, %.1f]", median(v), quantile(v, 0.025), quantile(v, 0.975))
+
+ml_fit <- fit_ml_exp(z, X_mat, D_mat)
+```
+
+## 1.2 Fitting the three methods with `Bspatial()`
+
+All three fits use the same mean structure and, whenever the method allows it, the same priors: flat-like prior on $\beta$ (bmstdr default, very large prior variance), $\sigma^2 \sim \text{IG}(2, 20000)$, $\tau^2 \sim \text{IG}(2, 5000)$ and $\phi = 1/\text{range} \sim \text{Uniform}(1/300, 1/5)$.
+
+- `none`: conjugate model, so $\phi$ cannot be sampled; it is fixed at the ML value `1 / ml_fit$range`, and there is no separate nugget.
+- `spBayes` and `stan`: $\phi$, $\sigma^2$ and $\tau^2$ are all random.
+
+The arguments describing the prior on $\phi$ are gathered in `phi_prior` so that they can be adapted in one place (see `?Bspatial` for the exact argument names of the installed version).
+
+```{r}
+#| label: fits
+N_mcmc <- 6000   # total iterations (spBayes and stan)
+burn   <- 2000   # burn-in / warm-up
+
+phi_prior <- list(prior.phi = "Unif", prior.phi.param = c(1 / 300, 1 / 5))
+
+# One wrapper so that the three methods are called in exactly the same way
+fit_bm <- function(pkg, data, validrows = NULL, phi_fixed = NULL) {
+  a <- list(package = pkg, model = "spat", formula = z ~ x_c + y_c, data = data,
+            coordtype = "plain", coords = 1:2, validrows = validrows,
+            prior.sigma2 = c(2, 20000),
+            mchoice = FALSE, plotit = FALSE, verbose = FALSE)
+  if (pkg == "none") {
+    a$phi <- phi_fixed
+    a$N   <- 2000
+  } else {
+    a <- c(a, list(prior.tau2 = c(2, 5000), N = N_mcmc, burn.in = burn), phi_prior)
+    if (pkg == "stan") { a$no.chains <- 3; a$phi <- phi_fixed }
+  }
+  do.call(Bspatial, a)
+}
+
+pkgs <- c(none = "none", spBayes = "spBayes", stan = "stan")
+fits <- list(); times <- numeric(0)
+for (m in names(pkgs)) {
+  times[m] <- system.time(
+    fits[[m]] <- fit_bm(pkgs[[m]], df, phi_fixed = 1 / ml_fit$range)
+  )[["elapsed"]]
+}
+```
+
+## 1.3 Extracting the posterior samples
+
+`Bspatial(package = "none")` only returns posterior summaries, so for this method we draw from the exact conjugate posterior (normal–inverse-gamma with $\phi$ fixed). The result is checked against the summaries returned by bmstdr in the table below. For `spBayes` and `stan` the samples are taken from the underlying fitted objects.
+
+```{r}
+#| label: posterior-draws
+# Exact posterior draws for package = "none" (phi fixed, no nugget, flat prior on beta)
+rpost_none <- function(d, phi, a = 2, b = 20000, S = 4000) {
+  X <- model.matrix(~ x_c + y_c, d); y <- d$z; nn <- length(y); p <- ncol(X)
+  R  <- exp(-phi * as.matrix(dist(d[, c("x", "y")])))
+  Ch <- chol(R)
+  Xs <- backsolve(Ch, X, transpose = TRUE); ys <- backsolve(Ch, y, transpose = TRUE)
+  Vb <- solve(crossprod(Xs)); bh <- as.vector(Vb %*% crossprod(Xs, ys))
+  ss <- sum((ys - Xs %*% bh)^2)
+  sig2 <- 1 / rgamma(S, a + (nn - p) / 2, b + ss / 2)
+  L <- chol(Vb)
+  B <- t(sapply(sig2, function(s) bh + sqrt(s) * as.vector(t(L) %*% rnorm(p))))
+  data.frame(beta0 = B[, 1], beta1 = B[, 2], beta2 = B[, 3],
+             sigma2 = sig2, tau2 = NA_real_, range = 1 / phi)
+}
+
+post_draws <- function(fit, pkg) {
+  if (pkg == "none") return(rpost_none(df, 1 / ml_fit$range))
+  if (pkg == "spBayes") {
+    obj <- fit$fit
+    if (is.null(obj$p.beta.recover.samples))
+      obj <- spRecover(obj, start = burn + 1, thin = 5, get.w = FALSE, verbose = FALSE)
+    B  <- as.matrix(obj$p.beta.recover.samples)
+    th <- as.matrix(obj$p.theta.recover.samples)
+    return(data.frame(beta0 = B[, 1], beta1 = B[, 2], beta2 = B[, 3],
+                      sigma2 = th[, "sigma.sq"], tau2 = th[, "tau.sq"],
+                      range = 1 / th[, "phi"]))
+  }
+  if (pkg == "stan") {
+    m <- as.matrix(fit$fit)   # all chains stacked, warm-up already removed
+    pick <- function(pat) {
+      j <- grep(pat, colnames(m))
+      if (!length(j)) stop("Stan parameter not found: ", pat,
+                           "\nAvailable: ", paste(colnames(m), collapse = ", "))
+      m[, j[1]]
+    }
+    b <- m[, grep("^beta", colnames(m))[1:3]]
+    return(data.frame(beta0 = b[, 1], beta1 = b[, 2], beta2 = b[, 3],
+                      sigma2 = pick("^sigma"), tau2 = pick("^tau"),
+                      range = ml_fit$range))
+  }
+}
+
+post <- lapply(names(pkgs), function(m) post_draws(fits[[m]], pkgs[[m]]))
+names(post) <- names(pkgs)
+```
+
+## 1.4 Parameter comparison and MCMC diagnostics
+
+```{r}
+#| label: param-table
+params <- c("beta0", "beta1", "beta2", "sigma2", "tau2", "range")
+ml_vec <- c(ml_fit$beta, ml_fit$sigma2, ml_fit$tau2, ml_fit$range)
+
+summ <- function(m) {
+  d <- post[[m]]
+  sapply(params, function(p) {
+    v <- d[[p]]
+    if (all(is.na(v))) "no nugget"
+    else if (sd(v) == 0) sprintf("%.1f (fixed)", v[1])
+    else ci_str(v)
+  })
+}
+ess <- function(m) {
+  d <- post[[m]]
+  sapply(params, function(p) {
+    v <- d[[p]]
+    if (all(is.na(v)) || sd(v) == 0) NA else round(effectiveSize(mcmc(v)))
+  })
+}
+
+diag_tab <- data.frame(
+  Parameter = params,
+  ML = round(ml_vec, 2),
+  `none: median [95% CI]`    = summ("none"),
+  `spBayes: median [95% CI]` = summ("spBayes"),
+  `stan: median [95% CI]`    = summ("stan"),
+  `ESS none`    = ess("none"),
+  `ESS spBayes` = ess("spBayes"),
+  `ESS stan`    = ess("stan"),
+  check.names = FALSE
+)
+knitr::kable(diag_tab, row.names = FALSE,
+  caption = sprintf("Parameter estimates and effective sample sizes (runtime: none = %.2f s, spBayes = %.1f s, stan = %.1f s).",
+                    times["none"], times["spBayes"], times["stan"]))
+```
+
+Check of my exact draws for `package = "none"` against the summaries returned by bmstdr (posterior means):
+
+```{r}
+#| label: check-none
+bm_p <- fits$none$params
+chk <- data.frame(
+  Parameter = rownames(bm_p)[1:4],
+  `bmstdr (Bspatial)` = round(bm_p[1:4, 1], 2),
+  `exact draws (here)` = round(c(colMeans(post$none[, c("beta0", "beta1", "beta2", "sigma2")])), 2),
+  check.names = FALSE
+)
+knitr::kable(chk, row.names = FALSE)
+```
+
+If the two columns differ noticeably, the prior parametrisation of `prior.sigma2` or `prior.M` in the installed bmstdr version differs from the one assumed in `rpost_none()` and the latter should be adjusted.
+
+## 1.5 Posterior distributions of the parameters
+
+The figures overlay the posterior densities of the three methods. The dashed grey line is the prior density (when it is proper), and a dotted vertical line is used when a parameter is fixed (the range in `none`).
+
+```{r}
+#| label: posterior-long
+long <- do.call(rbind, lapply(names(post), function(m)
+  data.frame(Method = m, Parameter = rep(params, each = nrow(post[[m]])),
+             value = unlist(post[[m]][params], use.names = FALSE))))
+long <- long[!is.na(long$value), ]
+long$Parameter <- factor(long$Parameter, levels = params)
+long$Method    <- factor(long$Method, levels = names(pkgs))
+
+# parameters that are constant for a given method -> vertical line, not a density
+const <- aggregate(value ~ Method + Parameter, long, function(v) sd(v) == 0)
+names(const)[3] <- "const"
+long  <- merge(long, const)
+fixed <- unique(long[long$const, c("Method", "Parameter", "value")])
+long  <- long[!long$const, ]
+
+# prior densities
+dig <- function(x, a, b) b^a / gamma(a) * x^(-a - 1) * exp(-b / x)
+prior_curve <- function(par) {
+  v  <- long$value[long$Parameter == par]
+  xs <- seq(quantile(v, 0.001), quantile(v, 0.999), length.out = 400)
+  y <- switch(par,
+    sigma2 = dig(xs, 2, 20000),
+    tau2   = dig(xs, 2, 5000),
+    range  = (1 / (1 / 5 - 1 / 300)) / xs^2 * (xs >= 5 & xs <= 300))
+  data.frame(Parameter = factor(par, levels = params), x = xs, y = y)
+}
+priors_df <- do.call(rbind, lapply(c("sigma2", "tau2", "range"), prior_curve))
+
+plot_post <- function(pars, logx = FALSE) {
+  p <- ggplot(subset(long, Parameter %in% pars), aes(value, colour = Method)) +
+    geom_density(linewidth = 0.8, adjust = 1.2) +
+    geom_line(data = subset(priors_df, Parameter %in% pars), aes(x, y),
+              inherit.aes = FALSE, colour = "grey40", linetype = 2) +
+    geom_vline(data = subset(fixed, Parameter %in% pars),
+               aes(xintercept = value, colour = Method), linetype = 3, linewidth = 0.8) +
+    facet_wrap(~ Parameter, scales = "free") +
+    labs(x = NULL, y = "Posterior density") +
+    theme_minimal()
+  if (logx) p <- p + scale_x_log10()
+  p
+}
+```
+
+**Trend parameters** ($\beta_0, \beta_1, \beta_2$):
+
+```{r}
+#| label: fig-post-beta
+#| fig-height: 3.5
+plot_post(c("beta0", "beta1", "beta2"))
+```
+
+**Covariance parameters** ($\sigma^2$ and $\tau^2$):
+
+```{r}
+#| label: fig-post-cov
+#| fig-height: 3.5
+plot_post(c("sigma2", "tau2"))
+```
+
+**Range** (log scale; the prior is $1/\text{range} \sim \text{U}(1/300, 1/5)$):
+
+```{r}
+#| label: fig-post-range
+#| fig-height: 3.5
+plot_post("range", logx = TRUE)
+```
+
+Trace plots of the sampled covariance parameters (for `stan`, the three chains are stacked one after the other):
+
+```{r}
+#| label: fig-trace
+#| fig-height: 5
+tr <- do.call(rbind, lapply(c("spBayes", "stan"), function(m)
+  do.call(rbind, lapply(c("sigma2", "tau2", "range"), function(p)
+    data.frame(Method = m, Parameter = p, Iteration = seq_len(nrow(post[[m]])),
+               value = post[[m]][[p]])))))
+ggplot(tr, aes(Iteration, value)) +
+  geom_line(linewidth = 0.2, alpha = 0.8) +
+  facet_grid(Parameter ~ Method, scales = "free") +
+  theme_minimal()
+```
+
+```{r}
+#| label: interp-part1
+#| echo: false
+w <- function(m, p) { v <- post[[m]][[p]]; unname(diff(quantile(v, c(0.025, 0.975)))) }
+```
+
+The 95 % credible-interval widths for $\sigma^2$ are `r sprintf("%.0f", w("none","sigma2"))` (none), `r sprintf("%.0f", w("spBayes","sigma2"))` (spBayes) and `r sprintf("%.0f", w("stan","sigma2"))` (stan), and for the range `r sprintf("%.0f", w("spBayes","range"))` (spBayes) and `r sprintf("%.0f", w("stan","range"))` (stan) miles. Because `none` conditions on a fixed range, it does not propagate the uncertainty on $\phi$ into the other parameters, which is expected to give narrower intervals for $\beta_0$ and $\sigma^2$ than the two MCMC methods; the range is weakly identified with 85 observations, so its posterior stays close to its prior (compare the density with the dashed line).
+
+# Part II: Posterior predictive intervals on a $20 \times 20$ grid
+
+We construct the $20 \times 20$ grid covering the Wolfcamp domain (as in Homework 1) and compute the pointwise predictive median and 95 % posterior predictive intervals for the three methods, all obtained from `valpreds` (posterior predictive draws of a new observation).
+
+```{r}
+#| label: grid-fit
+ngrid <- 20
+gx <- seq(min(df$x), max(df$x), length.out = ngrid)
+gy <- seq(min(df$y), max(df$y), length.out = ngrid)
+grid_df <- expand.grid(x = gx, y = gy)
+grid_df$x_c <- grid_df$x - x0
+grid_df$y_c <- grid_df$y - y0
+grid_df$z   <- mean(z)   # placeholder for validrows (not used in fitting)
+df_all <- rbind(df, grid_df)
+
+grid_pred <- lapply(names(pkgs), function(m) {
+  f <- fit_bm(pkgs[[m]], df_all, validrows = (n + 1):nrow(df_all),
+              phi_fixed = 1 / ml_fit$range)
+  d <- as.matrix(f$valpreds)
+  if (nrow(d) != nrow(grid_df)) d <- t(d)
+  data.frame(Method = m, x = grid_df$x, y = grid_df$y,
+             lower  = apply(d, 1, quantile, probs = 0.025),
+             median = apply(d, 1, median),
+             upper  = apply(d, 1, quantile, probs = 0.975))
+})
+g_all <- do.call(rbind, grid_pred)
+g_all$width  <- g_all$upper - g_all$lower
+g_all$Method <- factor(g_all$Method, levels = names(pkgs))
+```
+
+```{r}
+#| label: fig-grid-maps
+#| fig-height: 7
+mp <- rbind(
+  data.frame(g_all[, c("Method", "x", "y")], value = g_all$lower,  what = "Lower bound (2.5%)"),
+  data.frame(g_all[, c("Method", "x", "y")], value = g_all$median, what = "Median"),
+  data.frame(g_all[, c("Method", "x", "y")], value = g_all$upper,  what = "Upper bound (97.5%)")
+)
+mp$what <- factor(mp$what, levels = c("Lower bound (2.5%)", "Median", "Upper bound (97.5%)"))
+
+ggplot(mp, aes(x, y, fill = value)) +
+  geom_raster() +
+  geom_point(data = df, aes(x, y), inherit.aes = FALSE, size = 0.7, alpha = 0.7) +
+  facet_grid(Method ~ what) +
+  coord_equal() +
+  scale_fill_viridis_c(name = "Head (ft)") +
+  labs(title = "Posterior predictive median and 95% intervals (20x20 grid)") +
+  theme_minimal()
+```
+
+Width of the 95 % predictive interval over the grid:
+
+```{r}
+#| label: fig-grid-width
+#| fig-height: 3.5
+ggplot(g_all, aes(x, y, fill = width)) +
+  geom_raster() +
+  geom_point(data = df, aes(x, y), inherit.aes = FALSE, size = 0.7, alpha = 0.7) +
+  facet_wrap(~ Method) +
+  coord_equal() +
+  scale_fill_viridis_c(name = "Width (ft)", option = "magma") +
+  theme_minimal()
+```
+
+```{r}
+#| label: grid-table
+med <- sapply(grid_pred, function(a) a$median); colnames(med) <- names(pkgs)
+wid <- tapply(g_all$width, g_all$Method, mean)
+pairs <- combn(names(pkgs), 2, simplify = FALSE)
+comp_grid <- data.frame(
+  Pair = sapply(pairs, paste, collapse = " vs "),
+  `Correlation of medians` = sapply(pairs, function(p) cor(med[, p[1]], med[, p[2]])),
+  `Max abs. diff. of medians (ft)` = sapply(pairs, function(p) max(abs(med[, p[1]] - med[, p[2]]))),
+  `Mean width, 1st method (ft)` = sapply(pairs, function(p) wid[[p[1]]]),
+  `Mean width, 2nd method (ft)` = sapply(pairs, function(p) wid[[p[2]]]),
+  check.names = FALSE
+)
+knitr::kable(comp_grid, digits = 3, row.names = FALSE,
+             caption = "Agreement between the three methods on the 20x20 grid.")
+```
+
+# Part III: Out-of-sample comparison
+
+We perform a 5-fold cross-validation where the three models are re-estimated from scratch on each training fold (68 observations; for `none` the decay $\phi$ is re-estimated by ML on the training fold only) and evaluated on the held-out fold (17 observations) using proper scoring rules: RMSE, CRPS, LogS, IS95, 95 % coverage, and mean interval width.
+
+```{r}
+#| label: cv
+K <- 5
+set.seed(2026)
+fold <- sample(rep(seq_len(K), length.out = n))
+cv_time <- setNames(numeric(3), names(pkgs))
+
+cv_res <- do.call(rbind, lapply(seq_len(K), function(k) {
+  tr <- which(fold != k); te <- which(fold == k)
+  ml_tr <- fit_ml_exp(z[tr], X_mat[tr, , drop = FALSE], D_mat[tr, tr])
+  do.call(rbind, lapply(names(pkgs), function(m) {
+    t0 <- proc.time()
+    f  <- fit_bm(pkgs[[m]], df, validrows = te, phi_fixed = 1 / ml_tr$range)
+    cv_time[m] <<- cv_time[m] + (proc.time() - t0)[["elapsed"]]
+    cbind(Method = m, fold = k, id = te, score_draws(z[te], f$valpreds))
+  }))
+}))
+
+cv_tab <- do.call(rbind, lapply(names(pkgs), function(m) {
+  a <- cv_res[cv_res$Method == m, ]
+  data.frame(
+    Method = m,
+    `RMSE (ft)` = sqrt(mean((a$y - a$pred)^2)),
+    `CRPS (ft)` = mean(a$CRPS),
+    LogS        = mean(a$LogS),
+    `IS95 (ft)` = mean(a$IS95),
+    `Coverage (%)` = 100 * mean(a$covered),
+    `Mean width (ft)` = mean(a$width),
+    `Time (s)` = cv_time[[m]],
+    check.names = FALSE
+  )
+}))
+knitr::kable(cv_tab, digits = 2, row.names = FALSE,
+             caption = "5-fold cross-validation scores on the Wolfcamp data (parameters re-estimated in each fold).")
+```
+
+Distribution of the pointwise scores over the 85 held-out observations:
+
+```{r}
+#| label: fig-cv-scores
+#| fig-height: 3.5
+cvl <- rbind(
+  data.frame(cv_res[, c("Method", "id")], score = "CRPS (ft)", value = cv_res$CRPS),
+  data.frame(cv_res[, c("Method", "id")], score = "IS95 (ft)", value = cv_res$IS95),
+  data.frame(cv_res[, c("Method", "id")], score = "Abs. error (ft)", value = abs(cv_res$y - cv_res$pred))
+)
+cvl$Method <- factor(cvl$Method, levels = names(pkgs))
+ggplot(cvl, aes(Method, value, fill = Method)) +
+  geom_boxplot(outlier.size = 0.8, show.legend = FALSE) +
+  facet_wrap(~ score, scales = "free_y") +
+  theme_minimal()
+```
+
+# Conclusion
+
+*To be written after rendering the document*: compare (i) the posterior distributions of the parameters (Part I), where the main expected differences are the treatment of the range ($\phi$ fixed for `none`, random for `spBayes` and `stan`) and the presence of the nugget; (ii) the grid predictions (Part II); (iii) the cross-validation scores and runtimes (Part III). Report in particular whether `spBayes` and `stan`, which target the same posterior, agree with each other, and what is gained or lost by `none` in terms of speed and calibration.
+
+# Use of AI
+
+We used an AI assistant for this homework. It helped us write the R code for the Bayesian estimation with the three back-ends of `bmstdr::Bspatial` (`none`, `spBayes`, `stan`), the posterior plots, the proper scoring rules (RMSE, CRPS, LogS, IS95), the $20 \times 20$ prediction maps, and the 5-fold cross-validation.

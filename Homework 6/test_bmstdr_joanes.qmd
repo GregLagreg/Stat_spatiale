@@ -1,0 +1,92 @@
+---
+title: "test_bmstdr_joanes"
+format: html
+---
+Initialization
+```{r}
+library(bmstdr)
+data(wolfcamp, package = "geoR")
+
+dat <- data.frame(x = wolfcamp$coords[, 1],
+                  y = wolfcamp$coords[, 2],
+                  z = wolfcamp$data)
+
+set.seed(2026)
+```
+
+
+Comme le package bmstdr permet d'utiliser spBayes et de comparer nous allons utiliser uniquement ce package.
+
+```{r}
+bmstdr_variogram(formula = z ~ x + y, data = dat,
+               coordtype = "plain")
+bmstdr_variogram(formula = z ~ 1, data = dat,
+               coordtype = "plain")
+```
+
+
+
+Modeling
+model = spat -> fait un ajustement bayésien exact avec une covariance σ² exp(-φ d) et sans nugget.
+```{r}
+M1 <- Bspatial(model = "spat", formula = z ~ x + y, data = dat,
+               coordtype = "utm", coords = 1:2,   # columns 1:2 of dat are x, y
+               phi = 0.4, mchoice = TRUE, verbose = F)
+
+summary(M1)
+plot(M1)
+```
+```{r}
+M2 <- Bspatial(formula=z ~ x + y, 
+               data = dat,
+               coordtype="utm", 
+               coords=1:2, 
+               prior.phi=c(0.005, 2), 
+               package="spBayes",
+               verbose = F)
+```
+
+```{r}
+library(bmstdr)
+data(wolfcamp, package = "geoR")
+
+dat <- data.frame(x = wolfcamp$coords[, 1],
+                  y = wolfcamp$coords[, 2],
+                  z = wolfcamp$data)
+
+set.seed(2026)
+
+f    <- z ~ x + y
+phi0 <- 0.02
+s2   <- var(residuals(lm(f, data = dat)))   # ordre de grandeur pour b
+
+# 1. package "none" : exact, sans nugget
+m_none <- Bspatial(package = "none", model = "spat", formula = f, data = dat,
+                   coordtype = "plain", coords = 1:2, phi = phi0,
+                   prior.sigma2 = c(2, s2),
+                   mchoice = TRUE, verbose = FALSE)
+
+# 2. spBayes : avec nugget
+m_spb <- Bspatial(package = "spBayes", formula = f, data = dat,
+                  coordtype = "plain", coords = 1:2, phi = phi0,
+                  prior.sigma2 = c(2, s2), prior.tau2 = c(2, s2),
+                  N = 5000, burn.in = 1000,
+                  mchoice = TRUE, verbose = FALSE)
+
+# 3. stan : avec nugget
+m_stan <- Bspatial(package = "stan", formula = f, data = dat,
+                   coordtype = "plain", coords = 1:2, phi = phi0,
+                   N = 5000, burn.in = 1000,
+                   mchoice = TRUE, verbose = FALSE)
+
+# Comparaison
+res <- list(none = m_none, spBayes = m_spb, stan = m_stan)
+
+for (nm in names(res)) {
+  cat("\n---", nm, "---\n")
+  print(res[[nm]]$params)
+}
+
+print(round(t(sapply(res, function(m) unlist(m$mchoice))), 2))
+```
+

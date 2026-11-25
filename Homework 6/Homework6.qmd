@@ -268,7 +268,7 @@ bm_fit <- Bspatial(
 )
 t_bm <- (proc.time() - t0)[["elapsed"]]
 ```
-
+-> no nugget effect 
 ### 1.4 Convergence diagnostics and parameter comparison
 
 ```{r}
